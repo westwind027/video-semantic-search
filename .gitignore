@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/index.json
+data/acquisition_tasks.json
+data/alipan_profiles.json
+# 抽帧与抓取生成的图片产物，可由 ingest / 爬虫重新生成
+data/frames/
+logs/
+video-search-server

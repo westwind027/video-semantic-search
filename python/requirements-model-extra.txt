@@ -1,0 +1,5 @@
+# Extra packages for the existing Hunyuan3D Python environment.
+# Torch/CUDA/cuBLAS are provided by that environment and are intentionally not
+# listed here.
+sentence-transformers>=5.7.0
+qwen-vl-utils[decord]==0.0.14
