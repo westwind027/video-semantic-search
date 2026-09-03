@@ -141,6 +141,8 @@ type Manager struct {
 	webMu     sync.Mutex
 	webToken  *aliyunpan_web.WebLoginToken
 	webClient *aliyunpan_web.WebPanClient
+	// webRefreshOnce guards the single background web-token renewal loop.
+	webRefreshOnce sync.Once
 }
 
 type pendingLogin struct {
@@ -148,6 +150,9 @@ type pendingLogin struct {
 	ExpiresAt    time.Time
 	Provider     string
 	TicketID     string
+	// Web (passport QR) session credentials: ck/t from generate.do.
+	WebCk string
+	WebT  int64
 }
 
 type profile struct {
@@ -220,15 +225,18 @@ type fileDownloadURLResponse struct {
 
 // PublicProfile intentionally omits all credentials.
 type PublicProfile struct {
-	Name            string      `json:"name"`
-	Source          string      `json:"source"`
-	UserID          string      `json:"user_id"`
-	Nickname        string      `json:"nickname"`
-	AccountName     string      `json:"account_name,omitempty"`
-	ExpiresAt       time.Time   `json:"expires_at"`
-	HasRefreshToken bool        `json:"has_refresh_token"`
-	ActiveDriveID   string      `json:"active_drive_id,omitempty"`
-	Drives          []DriveInfo `json:"drives,omitempty"`
+	Name            string    `json:"name"`
+	Source          string    `json:"source"`
+	UserID          string    `json:"user_id"`
+	Nickname        string    `json:"nickname"`
+	AccountName     string    `json:"account_name,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	HasRefreshToken bool      `json:"has_refresh_token"`
+	// HasWebToken reports whether the separate browser-session (web) token
+	// for transcoded playback is authorized; it never exposes the token.
+	HasWebToken   bool        `json:"has_web_token"`
+	ActiveDriveID string      `json:"active_drive_id,omitempty"`
+	Drives        []DriveInfo `json:"drives,omitempty"`
 }
 
 type Status struct {
@@ -603,6 +611,9 @@ func (m *Manager) PollLogin(ctx context.Context, sessionID string) (LoginStatus,
 	m.mu.Unlock()
 	if !ok {
 		return LoginStatus{SessionID: sessionID, State: "expired", Message: "登录会话不存在或已失效"}, nil
+	}
+	if pending.Provider == "web" {
+		return m.pollWebLogin(ctx, sessionID, pending)
 	}
 	if pending.Provider != "tickstep" {
 		return LoginStatus{SessionID: sessionID, State: "waiting", Message: "等待浏览器 OAuth 回调或授权码"}, nil
@@ -1108,20 +1119,10 @@ func (m *Manager) ensureWebClient(ctx context.Context) *aliyunpan_web.WebPanClie
 		}
 		m.mu.Unlock()
 	}
-	appConfig := aliyunpan_web.AppConfig{
-		AppId:    "25dzX3vbYqktVxyX",
-		DeviceId: "T6ZJyY7JqX6EN2cDzLCxMVYZ",
-	}
-	client := aliyunpan_web.NewWebPanClient(*token, aliyunpan_web.AppLoginToken{}, appConfig, aliyunpan_web.SessionConfig{
-		DeviceName: "Chrome浏览器",
-		ModelName:  "Windows网页版",
-	})
-	_, _ = client.CreateSession(&aliyunpan_web.CreateSessionParam{
-		DeviceName: "Chrome浏览器",
-		ModelName:  "Windows网页版",
-	})
+	client := m.buildWebClient(token)
 	m.webToken = token
 	m.webClient = client
+	m.startWebTokenRefresher()
 	return client
 }
 
@@ -1524,7 +1525,7 @@ func (t tokenResponse) expiry() time.Time {
 
 func (p profile) public() PublicProfile {
 	drives := append([]DriveInfo(nil), p.Drives...)
-	return PublicProfile{Name: p.Name, Source: p.Source, UserID: p.UserID, Nickname: p.Nickname, AccountName: p.AccountName, ExpiresAt: p.ExpiresAt, HasRefreshToken: p.RefreshToken != "", ActiveDriveID: p.ActiveDriveID, Drives: drives}
+	return PublicProfile{Name: p.Name, Source: p.Source, UserID: p.UserID, Nickname: p.Nickname, AccountName: p.AccountName, ExpiresAt: p.ExpiresAt, HasRefreshToken: p.RefreshToken != "", HasWebToken: p.WebRefreshToken != "", ActiveDriveID: p.ActiveDriveID, Drives: drives}
 }
 
 func randomID() (string, error) {

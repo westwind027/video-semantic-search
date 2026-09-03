@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/connectors/alipan/status", s.handleAlipanStatus)
 	mux.HandleFunc("/v1/connectors/alipan/files", s.handleAlipanFiles)
 	mux.HandleFunc("/v1/connectors/alipan/login/start", s.handleAlipanLoginStart)
+	mux.HandleFunc("/v1/connectors/alipan/login/web/start", s.handleAlipanWebLoginStart)
 	mux.HandleFunc("/v1/connectors/alipan/login/complete", s.handleAlipanLoginComplete)
 	mux.HandleFunc("/v1/connectors/alipan/login/callback", s.handleAlipanLoginCallback)
 	mux.HandleFunc("/v1/connectors/alipan/login/", s.handleAlipanLoginResource)
@@ -787,6 +788,26 @@ func (s *Server) handleAlipanLoginStart(response http.ResponseWriter, request *h
 		return
 	}
 	login, err := s.alipan.StartLogin()
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, login)
+}
+
+// handleAlipanWebLoginStart starts a passport QR login for the browser-session
+// (web) token system used by transcoded playback — separate from the OpenAPI
+// tokens the regular login flow produces.
+func (s *Server) handleAlipanWebLoginStart(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	if s.alipan == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("阿里云盘 connector 未配置"))
+		return
+	}
+	login, err := s.alipan.StartWebLogin()
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
