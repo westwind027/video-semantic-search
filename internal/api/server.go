@@ -28,6 +28,11 @@ type Server struct {
 	jobs      *acquisition.Manager
 	frameRoot string
 	alipan    *alipan.Manager
+	streams   *streamProxy
+	cache     *streamCache
+	// Signed CDN playlist URLs for transcoded playback, keyed by media.
+	transcodeMu   sync.Mutex
+	transcodeURLs map[string]transcodeEntry
 }
 
 func NewServer(engine *search.Engine, indexStore store.IndexStore, embedder embedding.Client) *Server {
@@ -42,13 +47,16 @@ func NewServerWithAcquisitionAndAliyun(engine *search.Engine, indexStore store.I
 	if frameRoot == "" {
 		frameRoot = "data/frames"
 	}
-	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector}
+	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), transcodeURLs: map[string]transcodeEntry{}}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/favicon.ico", func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/v1/media", s.handleMediaCollection)
 	mux.HandleFunc("/v1/media/embeddings/rebuild", s.handleEmbeddingRebuildBatch)
 	mux.HandleFunc("/v1/media/batch/delete", s.handleMediaBatchDelete)
@@ -141,6 +149,23 @@ func (s *Server) handleMediaByID(response http.ResponseWriter, request *http.Req
 	parts := strings.Split(path, "/")
 	if len(parts) == 3 && parts[1] == "frames" && (request.Method == http.MethodGet || request.Method == http.MethodHead) {
 		s.handleFrame(response, request, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "stream" && (request.Method == http.MethodGet || request.Method == http.MethodHead) {
+		s.handleMediaStream(response, request, parts[0])
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "transcode" && request.Method == http.MethodGet {
+		switch {
+		case len(parts) == 2:
+			s.handleMediaTranscode(response, request, parts[0])
+		case parts[2] == "playlist":
+			s.handleTranscodePlaylist(response, request, parts[0])
+		case parts[2] == "proxy":
+			s.handleTranscodeProxy(response, request, parts[0])
+		default:
+			http.NotFound(response, request)
+		}
 		return
 	}
 	if len(parts) == 3 && parts[1] == "scenes" && request.Method == http.MethodDelete {

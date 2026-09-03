@@ -21,6 +21,9 @@ import (
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
+	"github.com/tickstep/aliyunpan-api/aliyunpan"
+	"github.com/tickstep/aliyunpan-api/aliyunpan_web"
+
 	"video-semantic-search/internal/httpclient"
 	"video-semantic-search/internal/source"
 )
@@ -54,8 +57,11 @@ type Config struct {
 	APIBaseURL        string
 	TickstepBrokerURL string
 	TickstepIP        string
-	ConfigPath        string
-	HTTPClient        *http.Client
+	// WebRefreshToken is the browser web-session refresh token (separate
+	// token system from the OpenAPI one) used for live-transcoding playback.
+	WebRefreshToken string
+	ConfigPath      string
+	HTTPClient      *http.Client
 }
 
 func ConfigFromEnv() Config {
@@ -74,6 +80,7 @@ func ConfigFromEnv() Config {
 		tickstepBrokerURL = DefaultTickstepBrokerURL
 	}
 	tickstepIP := strings.TrimSpace(os.Getenv("ALIYUNPAN_TICKSTEP_IP"))
+	webRefreshToken := strings.TrimSpace(os.Getenv("ALIYUNPAN_WEB_REFRESH_TOKEN"))
 	configPath := strings.TrimSpace(os.Getenv("VIDEO_SEARCH_ALIPAN_CONFIG"))
 	if configPath == "" {
 		if configDir := strings.TrimSpace(os.Getenv("ALIYUNPAN_CONFIG_DIR")); configDir != "" {
@@ -113,6 +120,7 @@ func ConfigFromEnv() Config {
 		APIBaseURL:        apiBaseURL,
 		TickstepBrokerURL: tickstepBrokerURL,
 		TickstepIP:        tickstepIP,
+		WebRefreshToken:   webRefreshToken,
 		ConfigPath:        configPath,
 		HTTPClient:        httpclient.NewDirectClient(30 * time.Second),
 	}
@@ -127,6 +135,12 @@ type Manager struct {
 	profile   *profile
 	loadErr   error
 	pending   map[string]pendingLogin
+
+	// The web client uses the separate browser-session token system and is
+	// built lazily only when a web refresh token is available.
+	webMu     sync.Mutex
+	webToken  *aliyunpan_web.WebLoginToken
+	webClient *aliyunpan_web.WebPanClient
 }
 
 type pendingLogin struct {
@@ -148,7 +162,11 @@ type profile struct {
 	TicketID      string      `json:"ticket_id,omitempty"`
 	ActiveDriveID string      `json:"active_drive_id,omitempty"`
 	Drives        []DriveInfo `json:"drives,omitempty"`
-	ImportedAt    time.Time   `json:"imported_at"`
+	// WebRefreshToken belongs to the separate web-session token system and
+	// powers the live-transcoding playback API. It rotates on every refresh,
+	// so the latest value is persisted back here.
+	WebRefreshToken string    `json:"web_refresh_token,omitempty"`
+	ImportedAt      time.Time `json:"imported_at"`
 }
 
 type DriveInfo struct {
@@ -945,6 +963,223 @@ func (m *Manager) getDownloadURL(ctx context.Context, accessToken, driveID, file
 		return "", errors.New("阿里云盘下载接口未返回 url")
 	}
 	return streamURL, nil
+}
+
+// VideoPreviewPlayInfo is a live-transcoded HLS rendition served from the
+// drive's own CDN. Playing these URLs bypasses the per-connection throttling
+// that hits original-file downloads, and the H.264/AAC output plays natively
+// in every browser (unlike MKV/HEVC originals).
+type VideoPreviewPlayInfo struct {
+	URL        string  `json:"url"`
+	TemplateID string  `json:"template_id"`
+	Duration   float64 `json:"duration,omitempty"`
+}
+
+// ErrTranscodingPending signals the drive accepted the transcode request but
+// the rendition is not ready yet; the caller should retry after a short wait.
+var ErrTranscodingPending = errors.New("阿里云盘视频转码尚未完成")
+
+// transcodeTemplatePreference lists the renditions to prefer, best first.
+// Overridable for accounts without the higher tiers or weaker network links.
+func transcodeTemplatePreference() []string {
+	raw := strings.TrimSpace(os.Getenv("ALIYUNPAN_TRANSCODE_TEMPLATES"))
+	if raw == "" {
+		return []string{"264_720p", "264_1080p", "264_480p"}
+	}
+	parts := strings.Split(raw, ",")
+	preference := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			preference = append(preference, trimmed)
+		}
+	}
+	return preference
+}
+
+type videoPreviewPlayInfoResult struct {
+	Code                 string `json:"code"`
+	VideoPreviewPlayInfo struct {
+		Meta struct {
+			Duration float64 `json:"duration"`
+		} `json:"meta"`
+		LiveTranscodingTaskList []struct {
+			TemplateID string `json:"template_id"`
+			Status     string `json:"status"`
+			URL        string `json:"url"`
+		} `json:"live_transcoding_task_list"`
+	} `json:"video_preview_play_info"`
+}
+
+// GetVideoPreviewPlayInfo asks the drive to live-transcode the file and
+// returns the HLS play URL of the best finished rendition. The live-
+// transcoding API only exists on the web endpoint, which needs the separate
+// browser-session token; without it (or while the official OpenAPI lacks the
+// endpoint) this returns an error and playback falls back to the
+// throttled original-file stream. Transcoding in progress surfaces as
+// ErrTranscodingPending so callers can poll.
+func (m *Manager) GetVideoPreviewPlayInfo(ctx context.Context, driveID, fileID string) (VideoPreviewPlayInfo, error) {
+	if client := m.ensureWebClient(ctx); client != nil {
+		resolvedDriveID := strings.TrimSpace(driveID)
+		if resolvedDriveID == "" {
+			m.mu.Lock()
+			if m.profile != nil {
+				resolvedDriveID = strings.TrimSpace(m.profile.ActiveDriveID)
+			}
+			m.mu.Unlock()
+		}
+		result, err := client.VideoGetPreviewPlayInfo(&aliyunpan.VideoGetPreviewPlayInfoParam{
+			DriveId: resolvedDriveID,
+			FileId:  strings.TrimSpace(fileID),
+		})
+		if err == nil {
+			return selectTranscodingTask(result)
+		}
+	}
+	// OpenAPI fallback: the official endpoint does not expose live
+	// transcoding yet, but keep the call path for future availability.
+	return m.getVideoPreviewPlayInfoOpenAPI(ctx, driveID, fileID)
+}
+
+// selectTranscodingTask picks the best finished rendition: preferred
+// templates first, then any finished one; unfinished tasks surface as
+// ErrTranscodingPending.
+func selectTranscodingTask(result *aliyunpan.VideoGetPreviewPlayInfoResult) (VideoPreviewPlayInfo, error) {
+	if result == nil {
+		return VideoPreviewPlayInfo{}, errors.New("阿里云盘未返回转码信息")
+	}
+	info := result.VideoPreviewPlayInfo
+	tasks := info.LiveTranscodingTaskList
+	isFinished := func(index int) bool {
+		task := tasks[index]
+		return strings.EqualFold(strings.TrimSpace(task.Status), "finished") && strings.TrimSpace(task.URL) != ""
+	}
+	for _, want := range transcodeTemplatePreference() {
+		for index := range tasks {
+			if tasks[index].TemplateId == want && isFinished(index) {
+				return VideoPreviewPlayInfo{URL: tasks[index].URL, TemplateID: tasks[index].TemplateId, Duration: info.Meta.Duration}, nil
+			}
+		}
+	}
+	for index := range tasks {
+		if isFinished(index) {
+			return VideoPreviewPlayInfo{URL: tasks[index].URL, TemplateID: tasks[index].TemplateId, Duration: info.Meta.Duration}, nil
+		}
+	}
+	if len(tasks) > 0 {
+		return VideoPreviewPlayInfo{}, ErrTranscodingPending
+	}
+	return VideoPreviewPlayInfo{}, errors.New("阿里云盘未返回可用转码地址")
+}
+
+// ensureWebClient lazily builds (or refreshes) the web-session client used
+// for live-transcoding playback. Returns nil when no web refresh token is
+// configured; the caller then falls back to the OpenAPI path.
+func (m *Manager) ensureWebClient(ctx context.Context) *aliyunpan_web.WebPanClient {
+	_ = ctx
+	m.webMu.Lock()
+	defer m.webMu.Unlock()
+	m.mu.Lock()
+	refreshToken := ""
+	if m.profile != nil {
+		refreshToken = strings.TrimSpace(m.profile.WebRefreshToken)
+	}
+	m.mu.Unlock()
+	if refreshToken == "" {
+		refreshToken = strings.TrimSpace(m.config.WebRefreshToken)
+	}
+	if refreshToken == "" {
+		return nil
+	}
+	if m.webClient != nil && m.webToken != nil && !m.webToken.IsAccessTokenExpired() {
+		return m.webClient
+	}
+	token, apiErr := aliyunpan_web.GetAccessTokenFromRefreshToken(refreshToken)
+	if apiErr != nil || token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		return nil
+	}
+	// The web refresh token rotates; persist the latest one so restarts and
+	// long-running sessions keep working.
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		m.mu.Lock()
+		if m.profile != nil && m.profile.WebRefreshToken != token.RefreshToken {
+			m.profile.WebRefreshToken = token.RefreshToken
+			saveErr := saveProfile(m.config.ConfigPath, *m.profile)
+			_ = saveErr // best effort; the in-memory value still applies
+		}
+		m.mu.Unlock()
+	}
+	appConfig := aliyunpan_web.AppConfig{
+		AppId:    "25dzX3vbYqktVxyX",
+		DeviceId: "T6ZJyY7JqX6EN2cDzLCxMVYZ",
+	}
+	client := aliyunpan_web.NewWebPanClient(*token, aliyunpan_web.AppLoginToken{}, appConfig, aliyunpan_web.SessionConfig{
+		DeviceName: "Chrome浏览器",
+		ModelName:  "Windows网页版",
+	})
+	_, _ = client.CreateSession(&aliyunpan_web.CreateSessionParam{
+		DeviceName: "Chrome浏览器",
+		ModelName:  "Windows网页版",
+	})
+	m.webToken = token
+	m.webClient = client
+	return client
+}
+
+// getVideoPreviewPlayInfoOpenAPI mirrors the web flow against the official
+// OpenAPI endpoint for future compatibility.
+func (m *Manager) getVideoPreviewPlayInfoOpenAPI(ctx context.Context, driveID, fileID string) (VideoPreviewPlayInfo, error) {
+	accessToken, resolvedDriveID, err := m.accessTokenAndDrive(ctx, driveID)
+	if err != nil {
+		return VideoPreviewPlayInfo{}, err
+	}
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return VideoPreviewPlayInfo{}, errors.New("阿里云盘 file_id 不能为空")
+	}
+	payload := map[string]any{
+		"drive_id":       resolvedDriveID,
+		"file_id":        fileID,
+		"category":       "live_transcoding",
+		"url_expire_sec": 3600,
+	}
+	var result videoPreviewPlayInfoResult
+	if err := m.postJSONWithBearer(ctx, m.config.APIBaseURL+"/v2/file/get_video_preview_play_info", accessToken, payload, &result); err != nil {
+		return VideoPreviewPlayInfo{}, fmt.Errorf("获取阿里云盘转码播放信息: %w", err)
+	}
+	if strings.TrimSpace(result.Code) == "VideoPreviewWaitAndRetry" {
+		return VideoPreviewPlayInfo{}, ErrTranscodingPending
+	}
+	info := result.VideoPreviewPlayInfo
+	finished := func(task *struct {
+		TemplateID string `json:"template_id"`
+		Status     string `json:"status"`
+		URL        string `json:"url"`
+	}) bool {
+		return strings.EqualFold(strings.TrimSpace(task.Status), "finished") && strings.TrimSpace(task.URL) != ""
+	}
+	pick := func(task *struct {
+		TemplateID string `json:"template_id"`
+		Status     string `json:"status"`
+		URL        string `json:"url"`
+	}) VideoPreviewPlayInfo {
+		return VideoPreviewPlayInfo{URL: task.URL, TemplateID: task.TemplateID, Duration: info.Meta.Duration}
+	}
+	for _, want := range transcodeTemplatePreference() {
+		for index := range info.LiveTranscodingTaskList {
+			if info.LiveTranscodingTaskList[index].TemplateID == want && finished(&info.LiveTranscodingTaskList[index]) {
+				return pick(&info.LiveTranscodingTaskList[index]), nil
+			}
+		}
+	}
+	for index := range info.LiveTranscodingTaskList {
+		if finished(&info.LiveTranscodingTaskList[index]) {
+			return pick(&info.LiveTranscodingTaskList[index]), nil
+		}
+	}
+	if len(info.LiveTranscodingTaskList) > 0 {
+		return VideoPreviewPlayInfo{}, ErrTranscodingPending
+	}
+	return VideoPreviewPlayInfo{}, errors.New("阿里云盘未返回可用转码地址")
 }
 
 func isVideoFile(name, extension, category, mimeType string) bool {

@@ -2,6 +2,21 @@
 
 更新时间：2026-09-03
 
+## 0. 最新进展
+
+当前本地版本基线为 `b4fcf20`（`feat: complete video semantic search MVP`），工作区在该版本提交后保持干净。最近一轮功能已经完成并验证：
+
+- 页面保持纯 B/S，不依赖 Electron 或浏览器文件选择器；用户直接输入 Windows 路径（如 `E:/Movies/movie.mp4`）或 WSL 路径，Go 服务负责路径转换、文件/目录判断和后续处理。
+- 上传与处理流程支持单文件检查后直接入队，目录检查后再按递归选项扫描视频。
+- 任务队列支持勾选、全选/反选、批量停止排队/运行任务、批量删除已完成/失败/已停止任务，以及清理全部终态记录。
+- 新增任务接口：`POST /v1/acquisitions/batch/stop`、`POST /v1/acquisitions/batch/delete`；新增路径检查接口：`POST /v1/files/inspect`。
+- 已执行 `go test ./...`，全部通过；当前验证实例为 Go `127.0.0.1:8000`、Python WeMM embedding `127.0.0.1:7002`，健康检查正常，索引包含 1 个视频和 49 个画面。
+
+删除任务记录只影响任务历史，不会删除原视频、关键帧或向量；批量删除接口也会拒绝仍在处理中的任务。
+
+新增**从画面起播**能力：搜索结果卡片中的任意命中画面可以直接点开播放器，并 seek 到**该画面抽帧的真实时间戳**（`Scene.PreviewTime`）：容器索引采样抽的是目标时间前最近的关键帧，与场景起始时间可能相差半个场景长度；处理器现把实际帧时间写入场景（旧索引在搜索时从 `metadata.frame_extraction_sources` 按帧号回填），搜索结果带 `preview_time` 字段，前端优先用它起播。播放地址为 `GET /v1/media/{id}/stream`：本地视频用 `http.ServeContent` 从原路径流出；阿里云盘视频由 Go 服务反向代理——浏览器永不接触签名 URL，签名 URL 短期缓存（10 分钟）并在上游 401/403 时自动刷新重试。代理端带**磁盘块缓存**（`internal/api/stream_cache.go`）：按 1 MiB 块落盘到 `data/stream-cache/`，未命中块流式转发给浏览器并同时写缓存（起播只需一次 RTT），读者离开后由后台接管下完当前块；后续块并行预取（预取最多占 4 个上游槽，浏览器请求优先），播放请求还会**优先预热文件尾块**（MKV 的 Cues 索引在尾部，浏览器读完头部会跳读尾部，实测预热后尾读从 ~40s 降到 3ms）；每媒体上游并发闸默认 8 路（`VIDEO_STREAM_CONCURRENCY` 可调）聚合单连接限速（实测单连接仅 ~100 KB/s）；响应中途的上游瞬时失败会从当前字节重建 reader 续传（最多 3 次），避免浏览器收到 ERR_CONTENT_LENGTH_MISMATCH；总缓存体积 LRU 淘汰（`VIDEO_STREAM_CACHE_BYTES`，默认 2 GiB；`VIDEO_STREAM_CACHE_DIR=off` 禁用）。**云端转码 HLS 播放（云盘视频首选路径，2026-09）**：原文件单连接被限速（~100 KB/s）且并发下载触发 403，改用阿里云盘 `get_video_preview_play_info`（category=live_transcoding）**云端转码**：返回各清晰度 m3u8（H.264/AAC，浏览器原生解码，顺带解决 MKV/HEVC 不支持问题），分片走 CDN 直连实测 ~7 MB/s（较原文件快约 70 倍），任意 seek 秒开。注意：**官方 OpenAPI 无此接口**，必须走网页版 Web token 体系（tickstep/aliyunpan-api 库 v0.2.9）——用浏览器登录取得的 RefreshToken 配置 `ALIYUNPAN_WEB_REFRESH_TOKEN`（.env），Manager 懒初始化 WebPanClient（AppId `25dzX3vbYqktVxyX` + CreateSession），web refresh token 轮换后自动持久化回 `data/alipan_profiles.json` 的 `web_refresh_token` 字段；CDN 对 m3u8/分片做 Referer 签名校验（必须 `Referer: https://www.aliyundrive.com/`，浏览器 JS 无法设置该头），故由服务端代理：`GET /v1/media/{id}/transcode` 返回代理 playlist 路径，`/transcode/playlist` 拉取 m3u8 并把每个分片改写到 `/transcode/proxy?u=...`（带 Referer/UA 转发，host 白名单 aliyundrive.net/alipan.com 防 SSRF，嵌套 playlist 递归重写），签名 URL 按 media 缓存 10 分钟（`internal/api/transcode.go`）。前端用 hls.js（jsDelivr CDN）加载代理 playlist，转码不可用/未完成时自动回退原文件 /stream 块缓存路径。
+纯 JS 自研播放器（无第三方库），提供播放/暂停、进度、音量、倍速和全屏；HEVC/H.265 编码或 MKV 容器浏览器不支持时给出明确提示（当前索引的 `001.mkv` 是 MKV 容器，Chrome/Edge 对 H.264 编码的 MKV 部分支持，播放取决于编码而非播放器）。
+
 ## 1. 当前目标与架构
 
 主架构是 Go，Python 只负责 embedding 推理。
@@ -271,12 +286,16 @@ curl -s http://127.0.0.1:8000/v1/media/<media-id> | jq '.metadata'
 - `POST /v1/acquisitions/batch/delete`：批量删除选中的 completed/failed/canceled 任务记录，正在处理的任务不会被删除。
 - `POST /v1/acquisitions/clear`：批量移除终态任务记录，body 可指定状态；页面“清理终态”会指定 `completed`、`failed`、`canceled`，返回 `{"removed":n}`。
 - `GET /v1/media`、`GET /v1/media/{id}`：已处理文件和场景。
+- `GET /v1/media/{id}/stream`：原始视频流播放（GET/HEAD）。本地文件直接流出；云盘文件由服务端代理并自动处理签名 URL 过期。浏览器可直接 seek。
 - `POST /v1/media/{id}/embeddings/rebuild`：异步重建单个视频的向量，body 为 `{"profile":"original"}` 或 `{"profile":"compressed"}`；只读取已提取关键帧，不重新解析视频。
 - `POST /v1/media/embeddings/rebuild`：批量异步重建选中视频的向量，body 为 `{"media_ids":["..."],"profile":"original"}` 或 `{"profile":"compressed"}`；返回多个任务和逐项失败信息。
 - `POST /v1/media/batch/delete`：批量删除选中的媒体，body 为 `{"media_ids":["..."]}`；返回 `deleted` 和逐项 `failures`，同时清理关键帧目录。
 - `GET /v1/media/{id}/frames/{filename}`：查看 JPG。
 - `DELETE /v1/media/{id}/scenes/{scene_id}`：删除关键帧和向量。
 - `DELETE /v1/media/{id}`：删除整部媒体及其向量。
+- `POST /v1/files/inspect`：检查单个服务端本地路径，并返回 `file` / `directory` 类型及可用性。
+- `POST /v1/files/validate`：批量检查服务端本地文件是否可读。
+- `POST /v1/files/scan`：扫描服务端本地目录中的视频文件。
 - `POST /v1/search`：语义搜索，支持按媒体或片段返回。
 - `GET /healthz`：服务和索引健康检查。
 
@@ -327,7 +346,8 @@ md5sum data/frames/<media-id>/frame-*.jpg \
 3. 为索引阶段增加实时 Range 字节数、当前阶段耗时和阶段超时，避免页面长时间停在“读取容器索引”而没有反馈；目前已经有 MP4 分块并发和索引缓存，但还没有逐阶段耗时字段。
 4. 根据实际服务端限流测试 `VIDEO_REMOTE_FRAME_WORKERS=4/8/12`，记录总耗时、成功率、Range 流量和 GPU 利用率。
 5. 对真实批量提交（几十个本地大文件 + 多个云盘文件）压测队列：确认 worker 数与 ffmpeg 并发、GPU 占用的平衡，并验证排队中取消、重复内容折叠在多 worker 下的行为。
-6. 补齐剩余容器与异常路径：fragmented MP4（`mvex`）、无 `Cues` 或 `Cues` 不带 `CueRelativePosition` 的 Matroska、laced block、多视频轨选择、MPEG-TS/AVI 容器；目前这些情况会回退到 FFmpeg 通用读取或报告局部不可解码。
-7. 将当前 `FileStore` 替换为 PostgreSQL + Qdrant，并增加视频级粗召回和场景级精排。
+6. 在线播放已切换云端转码 HLS（见 §0）；原文件 /stream 块缓存路径保留为回退。后续：web RefreshToken 过期后的重新登录引导（当前需手工更新 `ALIYUNPAN_WEB_REFRESH_TOKEN`）、转码分片磁盘缓存、更高清晰度（HD）切换按钮。
+7. 补齐剩余容器与异常路径：fragmented MP4（`mvex`）、无 `Cues` 或 `Cues` 不带 `CueRelativePosition` 的 Matroska、laced block、多视频轨选择、MPEG-TS/AVI 容器；目前这些情况会回退到 FFmpeg 通用读取或报告局部不可解码。
+8. 将当前 `FileStore` 替换为 PostgreSQL + Qdrant，并增加视频级粗召回和场景级精排。
 
 不要把 `.env`、`data/alipan_profiles.json`、下载 URL、access token 或 refresh token 提交到仓库。

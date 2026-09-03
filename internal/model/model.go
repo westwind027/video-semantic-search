@@ -23,12 +23,16 @@ type Media struct {
 }
 
 type Scene struct {
-	SceneID      string  `json:"scene_id,omitempty"`
-	AssetID      string  `json:"asset_id,omitempty"`
-	Start        float64 `json:"start"`
-	End          float64 `json:"end"`
-	Preview      string  `json:"preview,omitempty"`
-	PreviewPath  string  `json:"preview_path,omitempty"`
+	SceneID     string  `json:"scene_id,omitempty"`
+	AssetID     string  `json:"asset_id,omitempty"`
+	Start       float64 `json:"start"`
+	End         float64 `json:"end"`
+	Preview     string  `json:"preview,omitempty"`
+	PreviewPath string  `json:"preview_path,omitempty"`
+	// PreviewTime is the exact timestamp of the extracted preview frame. For
+	// container-indexed remote videos this is the keyframe actually decoded,
+	// which can be earlier than the scene boundary the frame was sampled at.
+	PreviewTime  float64 `json:"preview_time,omitempty"`
 	Caption      string  `json:"caption,omitempty"`
 	Subtitle     string  `json:"subtitle,omitempty"`
 	QualityScore float32 `json:"quality_score,omitempty"`
@@ -45,13 +49,14 @@ type SearchRequest struct {
 }
 
 type SceneResult struct {
-	SceneID  string  `json:"scene_id"`
-	Start    float64 `json:"start"`
-	End      float64 `json:"end"`
-	Score    float32 `json:"score"`
-	Preview  string  `json:"preview,omitempty"`
-	Caption  string  `json:"caption,omitempty"`
-	Subtitle string  `json:"subtitle,omitempty"`
+	SceneID     string  `json:"scene_id"`
+	Start       float64 `json:"start"`
+	End         float64 `json:"end"`
+	Score       float32 `json:"score"`
+	Preview     string  `json:"preview,omitempty"`
+	PreviewTime float64 `json:"preview_time,omitempty"`
+	Caption     string  `json:"caption,omitempty"`
+	Subtitle    string  `json:"subtitle,omitempty"`
 }
 
 type SearchResult struct {

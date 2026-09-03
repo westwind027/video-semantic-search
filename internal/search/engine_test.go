@@ -212,6 +212,50 @@ func TestEngineSearchFlattensScenesAndAppliesScore(t *testing.T) {
 	}
 }
 
+func TestEngineSearchBackfillsPreviewTimeFromMetadata(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	// Legacy entry: scenes carry no PreviewTime, but the acquisition metadata
+	// records the exact keyframe timestamps that were decoded.
+	media := model.Media{
+		MediaID: "legacy",
+		Title:   "Legacy",
+		Scenes: []model.Scene{
+			{SceneID: "s0", Start: 14.92, End: 30, Preview: "/frames/frame-000001.jpg"},
+			{SceneID: "s1", Start: 44.77, End: 60, Preview: "/frames/frame-000002.jpg"},
+		},
+		Metadata: map[string]any{
+			"frame_extraction_sources": []any{
+				map[string]any{"scene_index": float64(0), "timestamp": 14.92, "sample_timestamp": 13.303},
+				map[string]any{"scene_index": float64(1), "timestamp": 44.77, "sample_timestamp": 44.662},
+			},
+		},
+	}
+	if err := index.UpsertMedia(media, [][]float32{{1, 0}, {1, 0}}, "fixed"); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(index, fixedQueryEmbedder{}, false)
+	response, err := engine.Search(context.Background(), model.SearchRequest{Query: "query", Mode: "scene", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 {
+		t.Fatalf("results = %+v", response.Results)
+	}
+	for _, result := range response.Results {
+		want := 13.303
+		if result.Scene.SceneID == "s1" {
+			want = 44.662
+		}
+		if result.Scene.PreviewTime != want {
+			t.Fatalf("scene %s preview_time = %v, want %v", result.Scene.SceneID, result.Scene.PreviewTime, want)
+		}
+	}
+}
+
 func TestEngineIndexesImagesInBatchesAndReportsProgress(t *testing.T) {
 	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
 	if err != nil {

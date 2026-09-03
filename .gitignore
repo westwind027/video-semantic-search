@@ -13,3 +13,5 @@ data/alipan_profiles.json
 data/frames/
 logs/
 video-search-server
+data/stream-cache/
+.build/

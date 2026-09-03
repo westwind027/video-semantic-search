@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"video-semantic-search/internal/embedding"
@@ -294,7 +295,7 @@ func (e *Engine) Search(ctx context.Context, request model.SearchRequest) (model
 		return model.SearchResponse{}, fmt.Errorf("query embedding returned %d vectors", len(queryResult.Vectors))
 	}
 	queryVector := queryResult.Vectors[0]
-
+	previewFallbacks := map[string]map[int]float64{}
 	type scoredScene struct {
 		document store.SceneDocument
 		score    float32
@@ -323,6 +324,25 @@ func (e *Engine) Search(ctx context.Context, request model.SearchRequest) (model
 		return ranked[left].score > ranked[right].score
 	})
 
+	sceneWithPreviewTime := func(hit scoredScene) model.Scene {
+		scene := hit.document.Scene
+		if scene.PreviewTime != 0 || (scene.Preview == "" && scene.PreviewPath == "") {
+			return scene
+		}
+		times, ok := previewFallbacks[hit.document.MediaID]
+		if !ok {
+			times = map[int]float64{}
+			if media, found := e.store.GetMedia(hit.document.MediaID); found {
+				times = previewTimesFromMetadata(media.Metadata)
+			}
+			previewFallbacks[hit.document.MediaID] = times
+		}
+		if index := previewFrameIndex(scene); index >= 0 {
+			scene.PreviewTime = times[index]
+		}
+		return scene
+	}
+
 	if mode == "scene" {
 		if len(ranked) > request.Limit {
 			ranked = ranked[:request.Limit]
@@ -335,7 +355,7 @@ func (e *Engine) Search(ctx context.Context, request model.SearchRequest) (model
 				Year:      hit.document.Year,
 				SourceURL: hit.document.SourceURL,
 				Score:     roundScore(hit.score),
-				Scene:     sceneResult(hit.document.Scene, hit.score),
+				Scene:     sceneResult(sceneWithPreviewTime(hit), hit.score),
 			})
 		}
 		return response, nil
@@ -366,12 +386,12 @@ func (e *Engine) Search(ctx context.Context, request model.SearchRequest) (model
 	}
 	for _, group := range mediaGroups {
 		best := group.hits[0]
-		result := model.SearchResult{MediaID: best.document.MediaID, Title: best.document.Title, Type: best.document.Type, Year: best.document.Year, SourceURL: best.document.SourceURL, Score: roundScore(best.score), Scene: sceneResult(best.document.Scene, best.score)}
+		result := model.SearchResult{MediaID: best.document.MediaID, Title: best.document.Title, Type: best.document.Type, Year: best.document.Year, SourceURL: best.document.SourceURL, Score: roundScore(best.score), Scene: sceneResult(sceneWithPreviewTime(best), best.score)}
 		for index, hit := range group.hits {
 			if index == 5 {
 				break
 			}
-			result.MatchedScenes = append(result.MatchedScenes, sceneResult(hit.document.Scene, hit.score))
+			result.MatchedScenes = append(result.MatchedScenes, sceneResult(sceneWithPreviewTime(hit), hit.score))
 		}
 		response.Results = append(response.Results, result)
 	}
@@ -409,7 +429,62 @@ func cosine(left, right []float32) float32 {
 }
 
 func sceneResult(scene model.Scene, score float32) model.SceneResult {
-	return model.SceneResult{SceneID: scene.SceneID, Start: scene.Start, End: scene.End, Score: roundScore(score), Preview: scene.Preview, Caption: scene.Caption, Subtitle: scene.Subtitle}
+	return model.SceneResult{SceneID: scene.SceneID, Start: scene.Start, End: scene.End, Score: roundScore(score), Preview: scene.Preview, PreviewTime: scene.PreviewTime, Caption: scene.Caption, Subtitle: scene.Subtitle}
+}
+
+// previewTimesFromMetadata rebuilds the scene-index → preview-frame timestamp
+// mapping from acquisition metadata for media indexed before the PreviewTime
+// field existed, so playback starts on the picture the user searched for.
+func previewTimesFromMetadata(metadata map[string]any) map[int]float64 {
+	raw, ok := metadata["frame_extraction_sources"].([]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[int]float64, len(raw))
+	for _, entry := range raw {
+		source, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		indexValue, ok := source["scene_index"].(float64)
+		if !ok {
+			continue
+		}
+		timestamp, ok := source["sample_timestamp"].(float64)
+		if !ok || timestamp <= 0 {
+			continue
+		}
+		result[int(indexValue)] = timestamp
+	}
+	return result
+}
+
+// previewFrameIndex recovers the scene position from the frame file name,
+// which the processor numbers as scene index + 1.
+func previewFrameIndex(scene model.Scene) int {
+	name := scene.PreviewPath
+	if name == "" {
+		name = scene.Preview
+	}
+	if name == "" {
+		return -1
+	}
+	base := name
+	if slash := strings.LastIndexAny(base, `/\`); slash >= 0 {
+		base = base[slash+1:]
+	}
+	if !strings.HasPrefix(base, "frame-") {
+		return -1
+	}
+	digits := base[len("frame-"):]
+	if dot := strings.IndexByte(digits, '.'); dot >= 0 {
+		digits = digits[:dot]
+	}
+	number, err := strconv.Atoi(digits)
+	if err != nil || number <= 0 {
+		return -1
+	}
+	return number - 1
 }
 
 func roundScore(value float32) float32 {

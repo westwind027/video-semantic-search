@@ -557,6 +557,12 @@ func (p *VideoProcessor) extractFramesWithFailures(ctx context.Context, videoPat
 			scenes[index].PreviewPath = framePath
 			scenes[index].Preview = fmt.Sprintf("/v1/media/%s/frames/%s", mediaID, filename)
 			scenes[index].Caption = fmt.Sprintf("视频镜头，时间 %s", formatTimestamp(timestamp))
+			// Record the exact frame the viewer will see: for indexed samples
+			// this is the keyframe actually decoded, not the requested time.
+			scenes[index].PreviewTime = sourceInfo.SampleTimestamp
+			if scenes[index].PreviewTime == 0 {
+				scenes[index].PreviewTime = timestamp
+			}
 			resultMu.Lock()
 			processed++
 			succeeded++

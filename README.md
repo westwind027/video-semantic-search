@@ -184,6 +184,7 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `POST /v1/media`：写入或重新索引一部媒体及其全部伪场景。
 - `GET /v1/media`：查看累计索引的媒体。
 - `GET /v1/media/{media_id}`：查看媒体和场景。
+- `GET /v1/media/{media_id}/stream`：播放原始视频。本地文件直接流出；云盘文件由服务端按 Range 代理，签名 URL 过期自动刷新，并带 4 MiB 磁盘块缓存与并行预取（聚合单连接限速），页面可从任意搜索结果画面起播到该画面抽帧的真实时间。缓存目录 `data/stream-cache/`（LRU，默认 2 GiB，`VIDEO_STREAM_CACHE_DIR=off` 禁用；上游并发 `VIDEO_STREAM_CONCURRENCY`，默认 8）。
 - `GET /v1/media/{media_id}/frames/{filename}`：查看 Go 抽取的代表帧。
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
 - `DELETE /v1/media/{media_id}`：删除媒体及其场景索引。

@@ -165,8 +165,10 @@ func TestAcquisitionDeleteRemovesTerminalTask(t *testing.T) {
 func TestAcquisitionBatchDeleteRemovesSelectedTerminalTasks(t *testing.T) {
 	handler, _, directory := newAcquisitionTestServer(t)
 	paths := []string{filepath.Join(directory, "first.mp4"), filepath.Join(directory, "second.mp4")}
-	for _, path := range paths {
-		if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+	// Distinct contents: identical files would be folded by local content
+	// deduplication, and this test only needs two independent media records.
+	for index, path := range paths {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("content-%d", index)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

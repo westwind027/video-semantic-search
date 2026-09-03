@@ -90,7 +90,10 @@
        when the result grid has four or five columns. */
     .result-card.flat { flex-direction: column; align-items: stretch; }
     .result-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 4px 0; }
-    .result-scene { min-width: 0; overflow: hidden; border-radius: 9px; background: var(--surface-muted); }
+    .result-scene { position: relative; min-width: 0; overflow: hidden; border-radius: 9px; background: var(--surface-muted); cursor: pointer; }
+    .scene-play { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; color: #fff; background: rgba(15, 23, 42, 0); opacity: 0; transition: .15s ease; }
+    .result-scene:hover .scene-play, .result-scene:focus-visible .scene-play { opacity: 1; background: rgba(15, 23, 42, .35); }
+    .scene-play svg { filter: drop-shadow(0 2px 8px rgba(0, 0, 0, .45)); }
     .result-scene img, .result-scene .placeholder { display: block; width: 100%; height: 104px; object-fit: cover; background: #edf0f5; }
     .result-card.flat .result-gallery { display: block; flex: none; width: 100%; padding: 0; }
     .result-card.flat .result-scene { height: auto; border-radius: 0; }
@@ -259,6 +262,21 @@
     .alipan-file-message { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
     .alipan-selection { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
     .alipan-selection small { color: var(--muted); }
+    .player-dialog { width: min(920px, 94vw); padding: 0; border: 0; border-radius: 18px; background: var(--surface-solid); }
+    .player-shell { padding: 14px 16px; }
+    .player-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .player-head strong { font-size: 15px; }
+    .player-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    #player-video { display: block; width: 100%; max-height: 60vh; margin-top: 12px; border-radius: 12px; background: #000; }
+    #player-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #f1ccd4; border-radius: 10px; color: var(--bad); background: #fdf3f4; font-size: 12px; line-height: 1.5; }
+    .player-controls { display: flex; align-items: center; gap: 9px; margin-top: 12px; }
+    .player-button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 9px; color: #43506a; background: var(--surface-muted); cursor: pointer; }
+    .player-button:hover { border-color: #cbd2ff; color: var(--accent); background: var(--accent-soft); }
+    .player-time { flex: none; min-width: 46px; color: var(--muted); font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
+    .player-seek { flex: 1; min-width: 60px; accent-color: var(--accent); }
+    .player-volume { flex: none; width: 76px; accent-color: var(--accent); }
+    .player-rate { flex: none; padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; color: #43506a; background: #fff; font-size: 11px; }
+    .player-hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     @media (max-width: 760px) {
       .app { padding: 14px 14px 100px; }
       .topbar { gap: 10px; }
@@ -365,6 +383,28 @@
     <div class="manage-layout"><div id="library-list" class="library-list"><div class="queue-empty">正在加载…</div></div><div id="manage-detail" class="manage-detail"><div class="empty"><div><strong>选择一个视频</strong>查看已提取的关键帧</div></div></div></div>
   </dialog>
 
+  <dialog id="player-dialog" class="player-dialog">
+    <div class="player-shell">
+      <div class="player-head">
+        <div><strong id="player-title">视频播放</strong><small id="player-subtitle"></small></div>
+        <button class="close-button" data-close="player-dialog" aria-label="关闭">×</button>
+      </div>
+      <video id="player-video" playsinline preload="metadata"></video>
+      <div id="player-error" hidden></div>
+      <div class="player-controls">
+        <button id="player-play" class="player-button" type="button" aria-label="播放或暂停"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg></button>
+        <span id="player-current" class="player-time">0:00</span>
+        <input id="player-seek" class="player-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+        <span id="player-duration" class="player-time">0:00</span>
+        <input id="player-volume" class="player-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="音量">
+        <select id="player-rate" class="player-rate" aria-label="播放速度"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+        <button id="player-fullscreen" class="player-button" type="button" aria-label="全屏"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></button>
+      </div>
+      <p class="player-hint">本地视频从原路径直接播放；云盘视频优先使用阿里云盘云端转码（HLS，CDN 直连不限速、浏览器原生解码，支持进度条任意跳转），转码不可用时回退到服务端按 Range 转发的原文件流。</p>
+    </div>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
   <script>
     const stages = { queued: '排队中', parsing: '解析', detecting_scenes: '分镜', extracting_frames: '提取画面', embedding: '生成嵌入', completed: '已完成', failed: '失败', canceled: '已停止' };
     const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, alipanSession: '', alipanMode: '', alipanPoll: null, alipanPollGeneration: 0, alipanPollInFlight: false, alipanPollInFlightGeneration: 0, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
@@ -407,11 +447,106 @@
       const root = $('#results'); root.replaceChildren(); if (!data.results || !data.results.length) { root.append(emptyState('没有超过当前相关度的结果', '可以降低最低相关度，或换一种画面描述')); return; }
       for (const item of data.results) {
         const scenes = state.mode === 'scene' ? [item.scene] : (item.matched_scenes && item.matched_scenes.length ? item.matched_scenes : [item.scene]); const card = document.createElement('article'); card.className = `result-card ${state.mode === 'scene' ? 'flat' : ''}`; const gallery = document.createElement('div'); gallery.className = 'result-gallery';
-        for (const scene of scenes) { const sceneNode = document.createElement('div'); sceneNode.className = 'result-scene'; if (scene.preview) { const image = document.createElement('img'); image.src = scene.preview; image.alt = item.title || '视频画面'; image.loading = 'lazy'; sceneNode.append(image); } else { const placeholder = document.createElement('div'); placeholder.className = 'placeholder'; sceneNode.append(placeholder); } const sceneMeta = document.createElement('div'); sceneMeta.className = 'result-scene-meta'; const time = document.createElement('span'); time.textContent = formatSeconds(scene.start); const score = document.createElement('span'); score.className = 'score'; score.textContent = Number(scene.score || item.score || 0).toFixed(3); sceneMeta.append(time, score); sceneNode.append(sceneMeta); gallery.append(sceneNode); }
+        for (const scene of scenes) { const sceneNode = document.createElement('div'); sceneNode.className = 'result-scene'; sceneNode.tabIndex = 0; sceneNode.setAttribute('role', 'button'); sceneNode.title = '从该画面开始播放'; if (scene.preview) { const image = document.createElement('img'); image.src = scene.preview; image.alt = item.title || '视频画面'; image.loading = 'lazy'; sceneNode.append(image); } else { const placeholder = document.createElement('div'); placeholder.className = 'placeholder'; sceneNode.append(placeholder); } const sceneMeta = document.createElement('div'); sceneMeta.className = 'result-scene-meta'; const time = document.createElement('span'); time.textContent = formatSeconds(scene.start); const score = document.createElement('span'); score.className = 'score'; score.textContent = Number(scene.score || item.score || 0).toFixed(3); sceneMeta.append(time, score); sceneNode.append(sceneMeta); const play = document.createElement('div'); play.className = 'scene-play'; play.setAttribute('aria-hidden', 'true'); play.innerHTML = '<svg width="34" height="34" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>'; sceneNode.append(play); sceneNode.addEventListener('click', () => openPlayer(item, scene)); sceneNode.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openPlayer(item, scene); } }); gallery.append(sceneNode); }
         const body = document.createElement('div'); body.className = 'result-body'; const title = document.createElement('h3'); title.textContent = item.title || '未命名视频'; const caption = document.createElement('p'); caption.textContent = scenes[0]?.caption || '匹配画面'; const meta = document.createElement('div'); meta.className = 'result-meta'; const count = document.createElement('span'); count.textContent = state.mode === 'scene' ? formatSeconds(item.scene?.start) : `${scenes.length} 个命中片段`; const best = document.createElement('span'); best.className = 'score'; best.textContent = `相关度 ${Number(item.score || 0).toFixed(3)}`; meta.append(count, best); body.append(title, caption, meta); card.append(gallery, body); root.append(card);
       }
     }
     async function search() { const query = $('#query').value.trim(); if (!query) return; const limit = Math.max(1, Math.min(100, Number($('#result-limit').value) || 16)); const minScore = Number($('#min-score').value) || 0; $('#search-message').textContent = '正在搜索…'; try { const data = await requestJSON('/v1/search', jsonOptions({ query, limit, min_score: minScore, mode: state.mode })); $('#search-message').textContent = `找到 ${data.results.length} ${state.mode === 'scene' ? '个片段' : '部视频'} · 相关度 > ${minScore.toFixed(2)}`; renderResults(data); } catch (error) { $('#search-message').textContent = `搜索失败：${error.message}`; } }
+
+    const formatClock = (value) => { const seconds = Math.max(0, Math.floor(Number(value) || 0)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; };
+    // 从搜索结果画面打开播放器，直接跳到该画面抽帧的真实时间。
+    let activeHls = null;
+    function destroyHls() { if (activeHls) { try { activeHls.destroy(); } catch (_) {} activeHls = null; } }
+
+    function openPlayer(item, scene) {
+      const mediaID = item.media_id; if (!mediaID) return;
+      const video = $('#player-video');
+      $('#player-title').textContent = item.title || '视频播放';
+      // preview_time 是预览帧本身的时间戳（旧数据回退到场景起始时间）。
+      const startAt = Number(scene.preview_time) || Number(scene.start) || 0;
+      $('#player-subtitle').textContent = `起播 ${formatClock(startAt)} – ${formatClock(scene.end)} · 来自匹配画面`;
+      $('#player-error').hidden = true;
+      openDialog($('#player-dialog'));
+      // 云盘视频优先走云端转码 HLS：CDN 直连不限速、H.264 浏览器原生解码、
+      // HLS 支持进度条任意跳转。转码不可用时回退到原文件 Range 流。
+      const seekOnReady = () => { try { if (Math.abs(video.currentTime - startAt) > 0.05) video.currentTime = startAt; } catch (_) {} };
+      const fallbackToOriginal = () => {
+        destroyHls();
+        video.src = `/v1/media/${escapePath(mediaID)}/stream`;
+        video.addEventListener('loadedmetadata', seekOnReady, { once: true });
+        video.addEventListener('error', () => { const box = $('#player-error'); box.hidden = false; box.textContent = '浏览器无法播放这个视频：常见原因是 HEVC/H.265 编码或 MKV 容器不受浏览器支持，可将视频转码为 H.264 MP4 后重新处理。'; }, { once: true });
+        video.play().catch(() => {});
+      };
+      attachTranscoded(mediaID, seekOnReady, fallbackToOriginal, 10);
+    }
+
+    // attachTranscoded 请求转码播放地址并挂到 <video>：返回 'hls' 表示已
+    // 挂载；返回 null 表示调用方应回退到原文件流。转码尚未完成时自动轮询，
+    // attempts 用尽后回退。
+    async function attachTranscoded(mediaID, seekOnReady, fallback, attempts) {
+      const video = $('#player-video');
+      try {
+        const res = await fetch(`/v1/media/${escapePath(mediaID)}/transcode`);
+        if (res.status === 202) {
+          if (attempts > 0) {
+            $('#player-subtitle').textContent = '云端转码中，稍候自动重试…';
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            if ($('#player-dialog').open) return attachTranscoded(mediaID, seekOnReady, fallback, attempts - 1);
+          }
+          return fallback();
+        }
+        if (!res.ok) return fallback();
+        const info = await res.json();
+        if (!info || !info.url) return fallback();
+        $('#player-subtitle').textContent = `${$('#player-subtitle').textContent} · 云端转码 ${info.template_id || ''}`.trim();
+        destroyHls();
+        if (window.Hls && Hls.isSupported()) {
+          activeHls = new Hls({ maxBufferLength: 30, maxBufferSize: 60 * 1000 * 1000 });
+          activeHls.loadSource(info.url);
+          activeHls.attachMedia(video);
+          activeHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+          activeHls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fallback(); });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = info.url;
+          video.play().catch(() => {});
+        } else {
+          return fallback();
+        }
+        video.addEventListener('loadedmetadata', seekOnReady, { once: true });
+        return 'hls';
+      } catch (_) {
+        return fallback();
+      }
+    }
+    function setupPlayer() {
+      const video = $('#player-video');
+      const playButton = $('#player-play');
+      const playIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>';
+      const pauseIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
+      const toggle = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); };
+      const syncPlayState = () => { playButton.innerHTML = video.paused ? playIcon : pauseIcon; };
+      playButton.addEventListener('click', toggle);
+      video.addEventListener('click', toggle);
+      video.addEventListener('play', syncPlayState);
+      video.addEventListener('pause', syncPlayState);
+      video.addEventListener('timeupdate', () => {
+        $('#player-current').textContent = formatClock(video.currentTime);
+        if (video.duration && Number.isFinite(video.duration)) $('#player-seek').value = String(Math.round(video.currentTime / video.duration * 1000));
+      });
+      video.addEventListener('loadedmetadata', () => { $('#player-duration').textContent = formatClock(video.duration); });
+      $('#player-seek').addEventListener('input', event => { if (!video.duration || !Number.isFinite(video.duration)) return; video.currentTime = Number(event.target.value) / 1000 * video.duration; });
+      $('#player-volume').addEventListener('input', event => { video.volume = Number(event.target.value); video.muted = video.volume === 0; });
+      $('#player-rate').addEventListener('change', event => { video.playbackRate = Number(event.target.value) || 1; });
+      $('#player-fullscreen').addEventListener('click', () => { if (document.fullscreenElement) void document.exitFullscreen(); else video.requestFullscreen?.(); });
+      // 关闭弹层时彻底释放视频元素与 HLS 实例，停止正在进行的下载。
+      $('#player-dialog').addEventListener('close', () => {
+        destroyHls();
+        video.pause(); video.removeAttribute('src'); video.load();
+        $('#player-seek').value = '0'; $('#player-current').textContent = '0:00'; $('#player-duration').textContent = '0:00';
+      });
+      syncPlayState();
+    }
+    setupPlayer();
 
     function renderTasks(tasks) {
       state.tasks = tasks;
