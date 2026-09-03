@@ -28,7 +28,10 @@ func main() {
 	defer indexStore.Close()
 
 	embedder := embedding.NewPythonClient(endpoint, timeout)
-	engine := search.NewEngine(indexStore, embedder, os.Getenv("VIDEO_SEARCH_USE_IMAGE_EMBEDDING") == "true")
+	// Image embedding is the intended default: WeMM maps text queries and
+	// image documents into one shared space, while text-only scene captions
+	// carry far weaker semantics. Opt out explicitly with =false.
+	engine := search.NewEngine(indexStore, embedder, os.Getenv("VIDEO_SEARCH_USE_IMAGE_EMBEDDING") != "false")
 	engine.ImageProfile = imageProfileOrDefault()
 	engine.ImageBatchSize = intOrDefault("VIDEO_IMAGE_BATCH_SIZE", engine.ImageBatchSize)
 	frameRoot := envOrDefault("VIDEO_SEARCH_FRAME_DIR", "data/frames")

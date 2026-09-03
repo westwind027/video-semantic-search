@@ -90,6 +90,33 @@ func (p *immediateProcessor) Calls() int {
 	return p.calls
 }
 
+// profileProcessor mimics VideoProcessor's frame_source metadata so the
+// extraction-profile dedup logic has something to compare against.
+type profileProcessor struct {
+	mu       sync.Mutex
+	calls    int
+	mediaIDs []string
+}
+
+func (p *profileProcessor) Process(_ context.Context, mediaID string, request Request, _ ProgressFunc) (model.Media, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mediaIDs = append(p.mediaIDs, mediaID)
+	p.mu.Unlock()
+	duration := 1.0
+	return model.Media{
+		MediaID: mediaID, Type: "movie", Title: "profile", Duration: &duration,
+		Scenes:   []model.Scene{{Start: 0, End: 1}},
+		Metadata: map[string]any{"frame_source": desiredFrameSource(request, false)},
+	}, nil
+}
+
+func (p *profileProcessor) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
 func (managerEmbedder) EmbedText(context.Context, []string, string) (embedding.Result, error) {
 	return embedding.Result{Vectors: [][]float32{{1}}, Model: "test", Dimension: 1}, nil
 }
@@ -244,6 +271,49 @@ func TestManagerDeduplicatesRemoteFileByFingerprint(t *testing.T) {
 	}
 	if calls := processor.Calls(); calls != 1 {
 		t.Fatalf("processor calls = %d, want 1", calls)
+	}
+}
+
+func TestManagerReprocessesWhenExtractionProfileChanges(t *testing.T) {
+	videoPath := filepath.Join(t.TempDir(), "movie.mp4")
+	if err := os.WriteFile(videoPath, []byte("same content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	processor := &profileProcessor{}
+	manager := NewManager(processor, search.NewEngine(index, managerEmbedder{}, false))
+	first, err := manager.Submit(Request{LocalPath: videoPath, FastMode: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForManagerState(t, manager, first.ID, "completed")
+	// Re-submitting the identical file with the other extraction profile must
+	// not be folded into deduplication: a new task reprocesses the video and
+	// reuses the original media ID so the index is replaced, not duplicated.
+	second, err := manager.Submit(Request{LocalPath: videoPath, FastMode: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("profile change reused task %s", first.ID)
+	}
+	waitForManagerState(t, manager, second.ID, "completed")
+	current, _ := manager.Get(second.ID)
+	if current.MediaID != first.ID {
+		t.Fatalf("reprocessed task media id = %s, want %s", current.MediaID, first.ID)
+	}
+	if calls := processor.Calls(); calls != 2 {
+		t.Fatalf("processor calls = %d, want 2", calls)
+	}
+	processor.mu.Lock()
+	secondMediaID := processor.mediaIDs[1]
+	processor.mu.Unlock()
+	if secondMediaID != first.ID {
+		t.Fatalf("processor media id = %s, want %s", secondMediaID, first.ID)
 	}
 }
 

@@ -168,15 +168,24 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 	// Without a fingerprint this only matches legacy index entries stored by
 	// local path, which FindMediaByFingerprint supports.
 	if media, ok := m.engine.FindMediaByFingerprint(contentFingerprint, path); ok {
-		if existing, exists := m.tasks[media.MediaID]; exists && existing.State == "completed" {
+		if extractionProfileChanged(media, request, m.defaultFastMode()) {
+			// The caller switched the frame-extraction profile（快速采样/
+			// 关键帧检测）: re-extract and re-index instead of folding into
+			// deduplication. The new run reuses the existing media ID so the
+			// store upserts over the old record instead of duplicating it.
+			task.MediaID = media.MediaID
+			task.Message = "关键帧提取方式已变更，将重新提取并重建索引"
+		} else {
+			if existing, exists := m.tasks[media.MediaID]; exists && existing.State == "completed" {
+				m.mu.Unlock()
+				return existing, nil
+			}
+			duplicate := duplicateTask(media, request, contentFingerprint, now)
+			m.tasks[duplicate.ID] = duplicate
+			m.persistLocked(true)
 			m.mu.Unlock()
-			return existing, nil
+			return duplicate, nil
 		}
-		duplicate := duplicateTask(media, request, contentFingerprint, now)
-		m.tasks[duplicate.ID] = duplicate
-		m.persistLocked(true)
-		m.mu.Unlock()
-		return duplicate, nil
 	}
 	workContext, cancel := context.WithCancel(context.Background())
 	if ahead := len(m.queue); ahead > 0 {
@@ -424,7 +433,16 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 		}
 	}
 	m.update(taskID, Progress{Stage: StageParsing, Percent: 0.02, Message: "任务开始"})
-	media, err := m.processor.Process(workContext, taskID, request, func(progress Progress) {
+	// A re-submission that changed the extraction profile keeps the original
+	// media ID so indexing overwrites the old record; processing must target
+	// that ID（frame directory and store key）rather than the fresh task ID.
+	processID := taskID
+	m.mu.RLock()
+	if pending, ok := m.tasks[taskID]; ok && pending.MediaID != "" {
+		processID = pending.MediaID
+	}
+	m.mu.RUnlock()
+	media, err := m.processor.Process(workContext, processID, request, func(progress Progress) {
 		m.update(taskID, progress)
 	})
 	if err != nil {
@@ -548,6 +566,16 @@ func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool 
 	// Same lookup pattern as Submit: the engine has its own locking, and the
 	// tiny race window just means a duplicate is caught by the next check.
 	media, mediaFound := m.engine.FindMediaByFingerprint(digest, request.LocalPath)
+	if mediaFound && extractionProfileChanged(media, request, m.defaultFastMode()) {
+		// Profile changed since the media was indexed: keep processing and
+		// reuse the stored media ID so the new record replaces the old one.
+		task.MediaID = media.MediaID
+		task.Message = "关键帧提取方式已变更，将重新提取并重建索引"
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+		m.mu.Unlock()
+		return false
+	}
 	if mediaFound {
 		task.State = "completed"
 		task.Stage = StageCompleted
@@ -570,6 +598,15 @@ func shortTaskID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// defaultFastMode returns the processor-wide fast-sampling default. The
+// Manager usually holds a *VideoProcessor; test fakes fall back to false.
+func (m *Manager) defaultFastMode() bool {
+	if vp, ok := m.processor.(*VideoProcessor); ok {
+		return vp.FastMode
+	}
+	return false
 }
 
 // Remove deletes one terminal task record. Queued and running tasks must go
@@ -686,6 +723,45 @@ func taskFingerprint(task Task) string {
 		return task.ContentFingerprint
 	}
 	return task.ContentSHA256
+}
+
+// desiredFrameSource reports the frame_source metadata value that processing
+// this request would produce. It mirrors the choices made by VideoProcessor,
+// including the remote special case: an indexed remote container submitted
+// with the accurate profile still samples keyframes instead of running a full
+// sequential scene scan, and that difference is visible in the frame table.
+func desiredFrameSource(request Request, defaultFast bool) string {
+	fast := defaultFast || request.FastMode
+	switch {
+	case request.IsRemote() && !fast:
+		return "remote_keyframe_sample"
+	case !fast:
+		return "ffmpeg_scene_detect"
+	default:
+		return "uniform_fast_sample"
+	}
+}
+
+// extractionProfileChanged reports whether the requested frame-extraction
+// profile differs from the one recorded on the stored media. Deduplication
+// must not fold a re-submission that switches between 快速采样 and 关键帧
+// 检测: the user expects a fresh extraction and a rebuilt index.
+func extractionProfileChanged(media model.Media, request Request, defaultFast bool) bool {
+	desired := desiredFrameSource(request, defaultFast)
+	stored, _ := media.Metadata["frame_source"].(string)
+	if stored == "" {
+		// Legacy records only carry the fast_mode flag, and a remote accurate
+		// run is indistinguishable from fast mode without frame_source.
+		flag, ok := media.Metadata["fast_mode"].(bool)
+		if !ok || (request.IsRemote() && !(defaultFast || request.FastMode)) {
+			return false
+		}
+		return flag != (defaultFast || request.FastMode)
+	}
+	if desired == "remote_keyframe_sample" {
+		return !strings.HasPrefix(stored, "remote_")
+	}
+	return stored != desired
 }
 
 func ensureFingerprintMetadata(metadata map[string]any, fingerprint string, remote bool) map[string]any {

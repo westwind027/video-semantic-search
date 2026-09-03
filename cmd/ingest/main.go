@@ -30,7 +30,8 @@ func main() {
 	}
 	defer indexStore.Close()
 	embedder := embedding.NewPythonClient(endpoint, 30*time.Second)
-	engine := search.NewEngine(indexStore, embedder, os.Getenv("VIDEO_SEARCH_USE_IMAGE_EMBEDDING") == "true")
+	// Match search-server: image embedding is the default; opt out with =false.
+	engine := search.NewEngine(indexStore, embedder, os.Getenv("VIDEO_SEARCH_USE_IMAGE_EMBEDDING") != "false")
 	engine.ImageProfile = imageProfileOrDefault()
 
 	input, err := os.Open(*file)
