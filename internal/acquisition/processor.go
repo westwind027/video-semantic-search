@@ -56,7 +56,7 @@ func (r Request) Validate() (string, error) {
 	if strings.TrimSpace(r.LocalPath) == "" {
 		return "", fmt.Errorf("local_path is required")
 	}
-	path, err := filepath.Abs(strings.TrimSpace(r.LocalPath))
+	path, err := filepath.Abs(NormalizeLocalPath(r.LocalPath))
 	if err != nil {
 		return "", fmt.Errorf("resolve local_path: %w", err)
 	}
@@ -117,6 +117,21 @@ type VideoProcessor struct {
 	FastMode            bool
 	FastMaxScenes       int
 	SceneRefineWindows  bool
+	// RemoteChunkSize is the aligned read unit used by sequential readers such
+	// as the FFmpeg range proxy. Container metadata and keyframe samples never
+	// use this grid; they request exact byte intervals.
+	RemoteChunkSize int64
+	// RemoteCacheBytes bounds the shared range cache of one acquisition, so a
+	// long movie cannot pin its media data in memory.
+	RemoteCacheBytes int64
+	// RemoteMoovWorkers and RemoteMoovChunkSize control the first-run MP4
+	// metadata fetch. A large moov is split into exact ranges and downloaded
+	// with bounded concurrency; these settings do not affect keyframe ranges.
+	RemoteMoovWorkers   int
+	RemoteMoovChunkSize int64
+	// RemoteIndexCacheDir stores compact parsed MP4 indexes keyed by the remote
+	// content identity. It never stores the original video or moov bytes.
+	RemoteIndexCacheDir string
 	RemoteResolver      source.Resolver
 
 	hardwareMu   sync.RWMutex
@@ -128,7 +143,7 @@ func NewVideoProcessor(frameRoot string) *VideoProcessor {
 		FFprobePath:         "ffprobe",
 		FFmpegPath:          "ffmpeg",
 		FrameRoot:           frameRoot,
-		MaxScenes:           5000,
+		MaxScenes:           240,
 		SceneWorkers:        4,
 		SceneOverlap:        1,
 		SceneSampleFPS:      2,
@@ -139,6 +154,11 @@ func NewVideoProcessor(frameRoot string) *VideoProcessor {
 		FrameTimeout:        45 * time.Second,
 		HWAccel:             "auto",
 		FastMaxScenes:       32,
+		RemoteChunkSize:     source.DefaultChunkSize,
+		RemoteCacheBytes:    source.DefaultMaxCacheBytes,
+		RemoteMoovWorkers:   defaultMP4MoovWorkers,
+		RemoteMoovChunkSize: defaultMP4MoovChunkSize,
+		RemoteIndexCacheDir: filepath.Join(frameRoot, ".container-index-cache"),
 	}
 }
 
@@ -175,7 +195,8 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 	var remote source.Video
 	var remoteReader *source.RangeReader
 	var remoteProxy *source.RangeProxy
-	var remoteMP4Index *mp4Index
+	var remoteIndex containerIndex
+	remoteIndexCacheState := "disabled"
 	if request.IsRemote() {
 		if p.RemoteResolver == nil {
 			return model.Media{}, fmt.Errorf("remote source resolver is not configured")
@@ -189,6 +210,12 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 			return model.Media{}, fmt.Errorf("remote video returned an empty stream URL")
 		}
 		remoteReader = source.NewHTTPRangeReader(remote.URL, remote.Size, nil)
+		if p.RemoteChunkSize > 0 {
+			remoteReader.ChunkSize = p.RemoteChunkSize
+		}
+		if p.RemoteCacheBytes > 0 {
+			remoteReader.SetMaxCacheBytes(p.RemoteCacheBytes)
+		}
 		remoteReader.SetURLRefresher(func(refreshContext context.Context) (string, error) {
 			fresh, refreshErr := p.RemoteResolver.ResolveVideo(refreshContext, request.DriveID, request.FileID)
 			if refreshErr != nil {
@@ -208,32 +235,57 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 	}
 	report(Progress{Stage: StageParsing, Percent: 0.05, Message: "正在解析视频元数据"})
 	var info videoInfo
-	if remoteReader != nil && isMP4Format(firstNonEmpty(remote.Name, request.SourceName), "") {
-		report(Progress{Stage: StageParsing, Percent: 0.12, Message: "正在读取 MP4 容器索引（不下载媒体数据）"})
-		indexed, indexErr := buildMP4Index(remoteReader)
-		if indexErr == nil && indexed.Duration > 0 && indexed.Width > 0 && indexed.Height > 0 && len(indexed.Keyframes) > 0 {
-			remoteMP4Index = indexed
-			info = indexed.videoInfo()
-		} else {
-			// The generic FFmpeg adapter remains the fallback for fragmented,
-			// unusual, or damaged MP4 files.
-			if indexErr != nil {
-				report(Progress{Stage: StageParsing, Percent: 0.14, Message: fmt.Sprintf("MP4 索引不可用（%v），切换为 FFmpeg 通用远程读取", indexErr)})
+	if remoteReader != nil {
+		// The container is identified from its first bytes rather than from the
+		// file name: a cloud drive name is user data, so its extension is often
+		// missing, wrong, or changed by a rename. Only container metadata is
+		// downloaded here, never the media data it describes.
+		report(Progress{Stage: StageParsing, Percent: 0.12, Message: "正在读取容器索引（仅元数据，不下载媒体数据）"})
+		cacheKey := remoteIndexCacheKey(request, remote)
+		if cacheKey != "" && p.RemoteIndexCacheDir != "" {
+			cached, hit, cacheErr := loadMP4IndexCache(p.RemoteIndexCacheDir, cacheKey, remote.Size, remoteReader)
+			if cacheErr == nil && hit {
+				candidate := cached.info()
+				if candidate.Duration > 0 && candidate.Width > 0 && candidate.Height > 0 {
+					remoteIndex = cached
+					info = candidate
+					remoteIndexCacheState = "hit"
+				}
 			} else {
-				report(Progress{Stage: StageParsing, Percent: 0.14, Message: "MP4 索引元数据不完整，切换为 FFmpeg 通用远程读取"})
+				remoteIndexCacheState = "miss"
+			}
+		}
+		if remoteIndex == nil {
+			indexed, indexErr := buildContainerIndexWithOptions(ctx, remoteReader, firstNonEmpty(remote.Name, request.SourceName), containerIndexOptions{
+				MP4MoovChunkSize: p.RemoteMoovChunkSize,
+				MP4MoovWorkers:   p.RemoteMoovWorkers,
+			})
+			if indexErr == nil {
+				candidate := indexed.info()
+				if candidate.Duration > 0 && candidate.Width > 0 && candidate.Height > 0 {
+					remoteIndex = indexed
+					info = candidate
+					if index, isMP4 := indexed.(*mp4Index); isMP4 && cacheKey != "" && p.RemoteIndexCacheDir != "" {
+						if cacheErr := saveMP4IndexCache(p.RemoteIndexCacheDir, cacheKey, remote.Size, index); cacheErr == nil {
+							remoteIndexCacheState = "stored"
+						}
+					}
+				} else {
+					indexErr = fmt.Errorf("容器索引元数据不完整")
+				}
+			}
+			if indexErr != nil {
+				// The generic FFmpeg range proxy remains the fallback for
+				// fragmented, unusual, or damaged containers.
+				report(Progress{Stage: StageParsing, Percent: 0.14, Message: fmt.Sprintf("容器索引不可用（%v），切换为 FFmpeg 通用远程读取", indexErr)})
 			}
 		}
 	}
-	if remoteMP4Index == nil {
+	if remoteIndex == nil {
 		info, err = p.probe(ctx, path)
 		if err != nil {
 			return model.Media{}, err
 		}
-	}
-	if remoteReader != nil && remoteMP4Index == nil && isMP4Format(remote.Name, info.FormatName) {
-		// Keep the fallback explicit in metadata/logs even when FFprobe detected
-		// the container from its bytes rather than the remote file name.
-		report(Progress{Stage: StageParsing, Percent: 0.14, Message: "使用 FFmpeg 通用远程读取"})
 	}
 
 	threshold := request.SceneThreshold
@@ -244,15 +296,26 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 		return model.Media{}, fmt.Errorf("scene_threshold must be between 0 and 1")
 	}
 	fastMode := p.FastMode || request.FastMode
-	if remoteMP4Index != nil && !fastMode {
+	if remoteIndex != nil && !fastMode {
 		// A full scene scan would sequentially decode the whole remote movie.
-		// Indexed MP4s use sparse keyframe-anchored samples instead.
+		// Indexed containers use sparse keyframe-anchored samples instead.
 		fastMode = true
 	}
 	var boundaries []float64
 	if fastMode {
-		report(Progress{Stage: StageDetecting, Percent: 0.18, Message: fmt.Sprintf("快速采样模式：最多 %d 个画面，跳过静态切镜扫描", p.fastSceneLimit())})
-		boundaries = fastSceneBoundaries(info.Duration, request.SampleInterval, p.fastSceneLimit())
+		sceneLimit := p.fastSceneLimit()
+		samplingLabel := "快速采样"
+		if remoteIndex != nil && !request.FastMode && !p.FastMode {
+			// An indexed remote container can use its keyframe table instead of
+			// the low-cost uniform fast sampler. Keep this path distinct so it
+			// can collect more keyframes without changing the interactive fast
+			// mode's 32-frame guard.
+			sceneLimit = p.keyframeSceneLimit()
+			samplingLabel = "关键帧采样"
+		}
+		sampleInterval := fastSampleInterval(request.SampleInterval)
+		report(Progress{Stage: StageDetecting, Percent: 0.18, Message: fmt.Sprintf("%s模式：按 %.1f 秒间隔，最多 %d 个画面，跳过静态切镜扫描", samplingLabel, sampleInterval, sceneLimit)})
+		boundaries = fastSceneBoundaries(info.Duration, request.SampleInterval, sceneLimit)
 		report(Progress{Stage: StageDetecting, Percent: 0.25, Message: fmt.Sprintf("快速采样完成，共 %d 个镜头", len(boundaries)+1)})
 	} else {
 		report(Progress{Stage: StageDetecting, Percent: 0.18, Message: "正在用关键帧快速检测镜头切换"})
@@ -289,11 +352,11 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 		frameWidth = 640
 	}
 	frameWorkerCount := p.FrameWorkers
-	if remoteMP4Index != nil && p.RemoteFrameWorkers > frameWorkerCount {
+	if remoteIndex != nil && p.RemoteFrameWorkers > frameWorkerCount {
 		frameWorkerCount = p.RemoteFrameWorkers
 	}
 	report(Progress{Stage: StageExtracting, Percent: 0.25, Message: fmt.Sprintf("检测到 %d 个镜头，正在提取画面", len(scenes))})
-	frameSummary, err := p.extractFramesWithFailures(ctx, path, mediaID, frameDir, scenes, info.PixelFormat, frameWidth, remoteMP4Index, report)
+	frameSummary, err := p.extractFramesWithFailures(ctx, path, mediaID, frameDir, scenes, info.PixelFormat, frameWidth, remoteIndex, report)
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = os.RemoveAll(frameDir)
@@ -315,8 +378,8 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 	}
 	duration := info.Duration
 	frameSource := map[bool]string{true: "uniform_fast_sample", false: "ffmpeg_scene_detect"}[fastMode]
-	if remoteMP4Index != nil {
-		frameSource = "remote_mp4_keyframe_sample"
+	if remoteIndex != nil {
+		frameSource = "remote_" + info.FormatName + "_keyframe_sample"
 	}
 	metadata := map[string]any{
 		"source":                   "local_file",
@@ -340,6 +403,7 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 		"frame_hwaccel":            p.HWAccel,
 		"fast_mode":                fastMode,
 		"fast_max_scenes":          p.fastSceneLimit(),
+		"scene_max_scenes":         p.keyframeSceneLimit(),
 		"frame_extracted_count":    len(scenes) - len(frameSummary.Failures),
 		"frame_extraction_methods": frameSummary.Methods,
 	}
@@ -359,15 +423,25 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 	}
 	if remoteReader != nil {
 		stats := remoteReader.Stats()
+		ratio := 0.0
+		if stats.Size > 0 {
+			ratio = float64(stats.BytesDownloaded) / float64(stats.Size)
+		}
 		metadata["remote_range"] = map[string]any{
 			"requests":         stats.Requests,
 			"bytes_downloaded": stats.BytesDownloaded,
-			"cached_chunks":    stats.CachedChunks,
+			"cached_blocks":    stats.CachedBlocks,
+			"cached_bytes":     stats.CachedBytes,
 			"size":             stats.Size,
+			// Share of the remote file that was actually downloaded. A sparse
+			// index keeps this far below one; it grows towards one only when the
+			// FFmpeg fallback streams the movie.
+			"download_ratio": ratio,
 		}
 		metadata["remote_access_mode"] = "http_range_cache"
-		if remoteMP4Index != nil {
-			metadata["remote_mp4_index"] = remoteMP4Index.summary()
+		if remoteIndex != nil {
+			metadata["remote_container_index"] = remoteIndex.summary()
+			metadata["remote_container_index_cache"] = remoteIndexCacheState
 		}
 	}
 	if request.IsRemote() {
@@ -403,27 +477,27 @@ type frameExtractionSummary struct {
 	Sources  []frameExtractionSource
 }
 
-// frameExtractionSource records the exact MP4 sample used for a preview. It
-// is intentionally persisted as acquisition metadata: when a remote file
+// frameExtractionSource records the exact container sample used for a preview.
+// It is intentionally persisted as acquisition metadata: when a remote file
 // produces repeated pictures, we can distinguish a bad sample index from a
 // bad range response without downloading the whole file again.
 type frameExtractionSource struct {
 	Index           int     `json:"scene_index"`
 	Timestamp       float64 `json:"timestamp"`
 	Method          string  `json:"method"`
-	SampleNumber    uint32  `json:"sample_number,omitempty"`
+	SampleNumber    uint64  `json:"sample_number,omitempty"`
 	SampleTimestamp float64 `json:"sample_timestamp,omitempty"`
 	Offset          int64   `json:"offset,omitempty"`
 	Size            int64   `json:"size,omitempty"`
 	SampleDigest    string  `json:"sample_digest,omitempty"`
 }
 
-func (p *VideoProcessor) extractFrames(ctx context.Context, videoPath, mediaID, frameDir string, scenes []model.Scene, pixelFormat string, frameWidth int, mp4AccessIndex *mp4Index, report ProgressFunc) error {
-	_, err := p.extractFramesWithFailures(ctx, videoPath, mediaID, frameDir, scenes, pixelFormat, frameWidth, mp4AccessIndex, report)
+func (p *VideoProcessor) extractFrames(ctx context.Context, videoPath, mediaID, frameDir string, scenes []model.Scene, pixelFormat string, frameWidth int, accessIndex containerIndex, report ProgressFunc) error {
+	_, err := p.extractFramesWithFailures(ctx, videoPath, mediaID, frameDir, scenes, pixelFormat, frameWidth, accessIndex, report)
 	return err
 }
 
-func (p *VideoProcessor) extractFramesWithFailures(ctx context.Context, videoPath, mediaID, frameDir string, scenes []model.Scene, pixelFormat string, frameWidth int, mp4AccessIndex *mp4Index, report ProgressFunc) (frameExtractionSummary, error) {
+func (p *VideoProcessor) extractFramesWithFailures(ctx context.Context, videoPath, mediaID, frameDir string, scenes []model.Scene, pixelFormat string, frameWidth int, accessIndex containerIndex, report ProgressFunc) (frameExtractionSummary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -434,7 +508,7 @@ func (p *VideoProcessor) extractFramesWithFailures(ctx context.Context, videoPat
 		return frameExtractionSummary{}, fmt.Errorf("video produced no scenes")
 	}
 	workerCount := p.FrameWorkers
-	if mp4AccessIndex != nil && p.RemoteFrameWorkers > workerCount {
+	if accessIndex != nil && p.RemoteFrameWorkers > workerCount {
 		workerCount = p.RemoteFrameWorkers
 	}
 	if workerCount <= 0 {
@@ -465,7 +539,7 @@ func (p *VideoProcessor) extractFramesWithFailures(ctx context.Context, videoPat
 			timestamp := (scenes[index].Start + scenes[index].End) / 2
 			filename := fmt.Sprintf("frame-%06d.jpg", index+1)
 			framePath := filepath.Join(frameDir, filename)
-			method, sourceInfo, err := p.extractFrameWithDetails(workContext, videoPath, timestamp, framePath, pixelFormat, frameWidth, mp4AccessIndex)
+			method, sourceInfo, err := p.extractFrameWithDetails(workContext, videoPath, timestamp, framePath, pixelFormat, frameWidth, accessIndex)
 			if err != nil {
 				resultMu.Lock()
 				failures = append(failures, frameExtractionFailure{Index: index, Timestamp: timestamp, Error: err.Error()})
@@ -883,20 +957,20 @@ func mergeSceneBoundaries(boundaries []float64, duration float64) []float64 {
 	return deduplicated
 }
 
-func (p *VideoProcessor) extractFrame(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, mp4AccessIndex *mp4Index) error {
-	_, err := p.extractFrameWithMethod(ctx, videoPath, timestamp, framePath, pixelFormat, frameWidth, mp4AccessIndex)
+func (p *VideoProcessor) extractFrame(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, accessIndex containerIndex) error {
+	_, err := p.extractFrameWithMethod(ctx, videoPath, timestamp, framePath, pixelFormat, frameWidth, accessIndex)
 	return err
 }
 
-func (p *VideoProcessor) extractFrameWithMethod(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, mp4AccessIndex *mp4Index) (string, error) {
-	method, _, err := p.extractFrameWithDetails(ctx, videoPath, timestamp, framePath, pixelFormat, frameWidth, mp4AccessIndex)
+func (p *VideoProcessor) extractFrameWithMethod(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, accessIndex containerIndex) (string, error) {
+	method, _, err := p.extractFrameWithDetails(ctx, videoPath, timestamp, framePath, pixelFormat, frameWidth, accessIndex)
 	return method, err
 }
 
-func (p *VideoProcessor) extractFrameWithDetails(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, mp4AccessIndex *mp4Index) (string, frameExtractionSource, error) {
+func (p *VideoProcessor) extractFrameWithDetails(ctx context.Context, videoPath string, timestamp float64, framePath, pixelFormat string, frameWidth int, accessIndex containerIndex) (string, frameExtractionSource, error) {
 	var indexedErr error
-	if mp4AccessIndex != nil {
-		if handled, sourceInfo, err := p.extractFrameFromIndexedSampleWithSource(ctx, mp4AccessIndex, timestamp, framePath, pixelFormat, frameWidth); handled {
+	if accessIndex != nil {
+		if handled, sourceInfo, err := p.extractFrameFromIndexedSampleWithSource(ctx, accessIndex, timestamp, framePath, pixelFormat, frameWidth); handled {
 			if err == nil {
 				sourceInfo.Method = "indexed_sample"
 				return "indexed_sample", sourceInfo, nil
@@ -909,12 +983,12 @@ func (p *VideoProcessor) extractFrameWithDetails(ctx context.Context, videoPath 
 	}
 
 	// A keyframe is already a complete decodable picture. For indexed remote
-	// MP4s, decode that picture directly instead of seeking to an I-frame and
-	// decoding an arbitrary number of HEVC frames up to the scene midpoint.
+	// containers, decode that picture directly instead of seeking to an I-frame
+	// and decoding an arbitrary number of frames up to the scene midpoint.
 	// This is both cheaper over HTTP ranges and avoids failures in a damaged
 	// or unusual GOP after an otherwise valid sync sample.
-	if mp4AccessIndex != nil {
-		anchor := mp4AccessIndex.anchor(timestamp)
+	if accessIndex != nil {
+		anchor := accessIndex.anchor(timestamp)
 		if err := p.extractFrameAtWithSeek(ctx, videoPath, anchor, anchor, framePath, pixelFormat, frameWidth); err == nil {
 			return "indexed_proxy", frameExtractionSource{}, nil
 		} else if ctx.Err() != nil {
@@ -960,13 +1034,15 @@ func (p *VideoProcessor) extractFrameWithDetails(ctx context.Context, videoPath 
 	return "", frameExtractionSource{}, fmt.Errorf("视频局部画面无法解码：时间 %.3fs 附近没有可用画面", timestamp)
 }
 
-func (p *VideoProcessor) extractFrameFromIndexedSample(ctx context.Context, index *mp4Index, timestamp float64, framePath, pixelFormat string, frameWidth int) (bool, error) {
+func (p *VideoProcessor) extractFrameFromIndexedSample(ctx context.Context, index containerIndex, timestamp float64, framePath, pixelFormat string, frameWidth int) (bool, error) {
 	handled, _, err := p.extractFrameFromIndexedSampleWithSource(ctx, index, timestamp, framePath, pixelFormat, frameWidth)
 	return handled, err
 }
 
-func (p *VideoProcessor) extractFrameFromIndexedSampleWithSource(ctx context.Context, index *mp4Index, timestamp float64, framePath, pixelFormat string, frameWidth int) (bool, frameExtractionSource, error) {
-	if index == nil || index.Reader == nil || len(index.Config) == 0 || (index.Codec != "h264" && index.Codec != "hevc") {
+func (p *VideoProcessor) extractFrameFromIndexedSampleWithSource(ctx context.Context, index containerIndex, timestamp float64, framePath, pixelFormat string, frameWidth int) (bool, frameExtractionSource, error) {
+	// An index without a supported elementary demuxer is still useful as a seek
+	// anchor, so this reports "not handled" instead of failing.
+	if index == nil || index.demuxer() == "" {
 		return false, frameExtractionSource{}, nil
 	}
 	sample, payload, err := index.readKeyframe(ctx, timestamp)
@@ -974,16 +1050,16 @@ func (p *VideoProcessor) extractFrameFromIndexedSampleWithSource(ctx context.Con
 		return true, frameExtractionSource{}, err
 	}
 	sourceInfo := frameExtractionSource{
-		SampleNumber:    sample.SampleNumber,
+		SampleNumber:    sample.Index,
 		SampleTimestamp: sample.Timestamp,
 		Offset:          sample.Offset,
 		Size:            sample.Size,
-		SampleDigest:    mp4SampleDigest(payload),
+		SampleDigest:    sampleDigest(payload),
 	}
-	return true, sourceInfo, p.extractElementaryFrame(ctx, index.Codec, payload, framePath, pixelFormat, frameWidth)
+	return true, sourceInfo, p.extractElementaryFrame(ctx, index.demuxer(), payload, framePath, pixelFormat, frameWidth)
 }
 
-func (p *VideoProcessor) extractElementaryFrame(ctx context.Context, codec string, sample []byte, framePath, pixelFormat string, frameWidth int) error {
+func (p *VideoProcessor) extractElementaryFrame(ctx context.Context, demuxer string, sample []byte, framePath, pixelFormat string, frameWidth int) error {
 	attemptContext := ctx
 	cancel := func() {}
 	if p.FrameTimeout > 0 {
@@ -999,7 +1075,7 @@ func (p *VideoProcessor) extractElementaryFrame(ctx context.Context, codec strin
 	}
 	tryCUDA := mode == "cuda" || (mode == "auto" && p.cudaAvailable())
 	if tryCUDA {
-		if err := p.extractElementaryFrameWithMode(attemptContext, codec, sample, framePath, pixelFormat, frameWidth, true); err == nil {
+		if err := p.extractElementaryFrameWithMode(attemptContext, demuxer, sample, framePath, pixelFormat, frameWidth, true); err == nil {
 			return nil
 		} else if mode == "cuda" {
 			if attemptContext.Err() == context.DeadlineExceeded && ctx.Err() == nil {
@@ -1015,20 +1091,23 @@ func (p *VideoProcessor) extractElementaryFrame(ctx context.Context, codec strin
 			p.disableCUDA()
 		}
 	}
-	err := p.extractElementaryFrameWithMode(attemptContext, codec, sample, framePath, pixelFormat, frameWidth, false)
+	err := p.extractElementaryFrameWithMode(attemptContext, demuxer, sample, framePath, pixelFormat, frameWidth, false)
 	if attemptContext.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 		return fmt.Errorf("画面提取超时（超过 %s）", p.FrameTimeout)
 	}
 	return err
 }
 
-func (p *VideoProcessor) extractElementaryFrameWithMode(ctx context.Context, codec string, sample []byte, framePath, pixelFormat string, frameWidth int, cuda bool) error {
+// extractElementaryFrameWithMode decodes one self-contained elementary stream.
+// demuxer is the ffmpeg -f input format that matches the payload: h264 and
+// hevc for Annex-B streams, ivf for a single VP8/VP9/AV1 frame.
+func (p *VideoProcessor) extractElementaryFrameWithMode(ctx context.Context, demuxer string, sample []byte, framePath, pixelFormat string, frameWidth int, cuda bool) error {
 	_ = os.Remove(framePath)
 	args := []string{"-hide_banner", "-loglevel", "error"}
 	if cuda {
 		args = append(args, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
 	}
-	args = append(args, "-f", codec, "-i", "pipe:0", "-frames:v", "1")
+	args = append(args, "-f", demuxer, "-i", "pipe:0", "-frames:v", "1")
 	filters := make([]string, 0, 3)
 	if cuda {
 		filters = append(filters, "hwdownload", "format="+cudaDownloadFormat(pixelFormat))
@@ -1185,30 +1264,40 @@ func isCUDAUnavailableError(detail string) bool {
 	return false
 }
 
-func (p *VideoProcessor) fastSceneLimit() int {
-	limit := p.FastMaxScenes
-	if limit <= 0 {
-		limit = 32
+const defaultFastSampleInterval = 30
+
+func fastSampleInterval(interval float64) float64 {
+	if interval <= 0 {
+		return defaultFastSampleInterval
 	}
-	return limit
+	return interval
+}
+
+func (p *VideoProcessor) fastSceneLimit() int {
+	if p.FastMaxScenes > 0 {
+		return p.FastMaxScenes
+	}
+	return 32
+}
+
+func (p *VideoProcessor) keyframeSceneLimit() int {
+	if p.MaxScenes > 0 {
+		return p.MaxScenes
+	}
+	return 240
 }
 
 func fastSceneBoundaries(duration, interval float64, maxScenes int) []float64 {
 	if duration <= 0 {
 		return nil
 	}
-	if maxScenes <= 0 {
-		maxScenes = 32
+	interval = fastSampleInterval(interval)
+	sceneCount := int(math.Ceil(duration / interval))
+	if sceneCount < 1 {
+		sceneCount = 1
 	}
-	sceneCount := maxScenes
-	if interval > 0 {
-		sceneCount = int(math.Ceil(duration / interval))
-		if sceneCount < 1 {
-			sceneCount = 1
-		}
-		if sceneCount > maxScenes {
-			sceneCount = maxScenes
-		}
+	if maxScenes > 0 && sceneCount > maxScenes {
+		sceneCount = maxScenes
 	}
 	if sceneCount <= 1 {
 		return nil

@@ -21,6 +21,7 @@ from typing import Any, Protocol, Sequence
 
 WORD_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+IMAGE_PROFILES = {"original", "compressed"}
 
 
 def load_dotenv() -> None:
@@ -63,7 +64,7 @@ class Backend(Protocol):
 
     def embed_texts(self, values: Sequence[str], role: str = "document") -> list[list[float]]: ...
 
-    def embed_images(self, values: Sequence[str]) -> list[list[float]]: ...
+    def embed_images(self, values: Sequence[str], image_profile: str = "original") -> list[list[float]]: ...
 
 
 class HashBackend:
@@ -87,7 +88,7 @@ class HashBackend:
     def embed_texts(self, values: Sequence[str], role: str = "document") -> list[list[float]]:
         return [self._embed(value) for value in values]
 
-    def embed_images(self, values: Sequence[str]) -> list[list[float]]:
+    def embed_images(self, values: Sequence[str], image_profile: str = "original") -> list[list[float]]:
         return [self._embed(value) for value in values]
 
 
@@ -100,13 +101,11 @@ class WemmBackend:
         if dimension <= 0:
             raise ValueError("EMBEDDING_DIMENSION must be positive")
         self._batch_size = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "8")))
-        self._min_image_pixels = int(os.getenv("WEMM_MIN_IMAGE_PIXELS", "65536"))
-        self._max_image_pixels = int(os.getenv("WEMM_MAX_IMAGE_PIXELS", "98304"))
-        if self._min_image_pixels < 0 or self._max_image_pixels < 0:
-            raise ValueError("WEMM image pixel limits must be non-negative")
-        if self._max_image_pixels > 0 and self._min_image_pixels > self._max_image_pixels:
-            raise ValueError("WEMM_MIN_IMAGE_PIXELS must not exceed WEMM_MAX_IMAGE_PIXELS")
         self._image_prompt = os.getenv("WEMM_IMAGE_PROMPT", "Represent this image.").strip()
+        self._compressed_min_image_pixels = max(1, int(os.getenv("WEMM_COMPRESSED_MIN_IMAGE_PIXELS", "65536")))
+        self._compressed_max_image_pixels = max(1, int(os.getenv("WEMM_COMPRESSED_MAX_IMAGE_PIXELS", "98304")))
+        if self._compressed_min_image_pixels > self._compressed_max_image_pixels:
+            raise ValueError("WEMM_COMPRESSED_MIN_IMAGE_PIXELS must not exceed WEMM_COMPRESSED_MAX_IMAGE_PIXELS")
         resolved_device = None if device == "auto" else device
         self._model = SentenceTransformer(model_id, trust_remote_code=True, device=resolved_device)
         model_config = getattr(getattr(self._model[0], "auto_model", None), "config", None)
@@ -124,7 +123,7 @@ class WemmBackend:
         self.dimension = dimension
         self.similarity = self._model.similarity_fn_name
 
-    def _encode(self, values: Sequence[Any], role: str) -> list[list[float]]:
+    def _encode(self, values: Sequence[Any], role: str, image_profile: str = "original") -> list[list[float]]:
         # WeMM's retrieval example uses encode_query for queries and
         # encode_document for indexed multimodal documents. Both methods apply
         # the same WeMM encoder here because the model has no prompt/router
@@ -139,13 +138,18 @@ class WemmBackend:
             "normalize_embeddings": True,
             "truncate_dim": self.dimension,
         }
-        if role == "document" and (self._min_image_pixels > 0 or self._max_image_pixels > 0):
-            image_kwargs = {}
-            if self._min_image_pixels > 0:
-                image_kwargs["min_pixels"] = self._min_image_pixels
-            if self._max_image_pixels > 0:
-                image_kwargs["max_pixels"] = self._max_image_pixels
-            encode_kwargs["processing_kwargs"] = {"image": image_kwargs}
+        if image_profile not in IMAGE_PROFILES:
+            raise ValueError(f"unsupported image profile {image_profile!r}")
+        if image_profile == "compressed":
+            # Qwen2-VL/WeMM accepts these image processor settings through
+            # SentenceTransformers' processing_kwargs. The original profile
+            # intentionally omits them and therefore uses model defaults.
+            encode_kwargs["processing_kwargs"] = {
+                "image": {
+                    "min_pixels": self._compressed_min_image_pixels,
+                    "max_pixels": self._compressed_max_image_pixels,
+                }
+            }
         result = encoder(list(values), **encode_kwargs)
         if result.ndim != 2 or result.shape[1] != self.dimension:
             raise RuntimeError(
@@ -157,14 +161,14 @@ class WemmBackend:
     def embed_texts(self, values: Sequence[str], role: str = "document") -> list[list[float]]:
         return self._encode(values, role)
 
-    def embed_images(self, values: Sequence[str]) -> list[list[float]]:
+    def embed_images(self, values: Sequence[str], image_profile: str = "original") -> list[list[float]]:
         samples: list[dict[str, str]] = []
         for value in values:
             sample = {"image": value}
             if self._image_prompt:
                 sample["text"] = self._image_prompt
             samples.append(sample)
-        return self._encode(samples, "document")
+        return self._encode(samples, "document", image_profile)
 
 
 def build_backend() -> Backend:
@@ -199,8 +203,12 @@ class Handler(BaseHTTPRequestHandler):
                 "similarity": getattr(BACKEND, "similarity", "cosine"),
                 "modalities": ["text", "image"],
                 "batch_size": getattr(BACKEND, "_batch_size", None),
-                "min_image_pixels": getattr(BACKEND, "_min_image_pixels", None),
-                "max_image_pixels": getattr(BACKEND, "_max_image_pixels", None),
+                "image_profiles": ["original", "compressed"],
+                "default_image_profile": "original",
+                "compressed_image_pixels": {
+                    "min": getattr(BACKEND, "_compressed_min_image_pixels", None),
+                    "max": getattr(BACKEND, "_compressed_max_image_pixels", None),
+                },
             },
         )
 
@@ -218,9 +226,13 @@ class Handler(BaseHTTPRequestHandler):
             if modality == "text":
                 values = payload.get("texts")
                 embeddings = BACKEND.embed_texts(values or [], payload.get("role", "document"))
+                image_profile = None
             elif modality == "image":
                 values = payload.get("images")
-                embeddings = BACKEND.embed_images(values or [])
+                image_profile = str(payload.get("image_profile") or "original").casefold()
+                if image_profile not in IMAGE_PROFILES:
+                    raise ValueError("image_profile must be original or compressed")
+                embeddings = BACKEND.embed_images(values or [], image_profile)
             else:
                 raise ValueError("modality must be text or image")
             if not isinstance(values, list) or not values:
@@ -232,6 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model": BACKEND.model,
                     "dimension": BACKEND.dimension,
                     "modality": modality,
+                    "image_profile": image_profile,
                 },
             )
         except (ValueError, TypeError, json.JSONDecodeError) as error:

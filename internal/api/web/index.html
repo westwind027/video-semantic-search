@@ -83,34 +83,43 @@
     .section-head h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
     .section-hint { color: var(--muted); font-size: 12px; }
     .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; }
-    .result-card { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface-solid); box-shadow: 0 4px 13px rgba(36,50,82,.04); transition: .2s ease; }
+    .result-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--surface-solid); box-shadow: 0 4px 13px rgba(36,50,82,.04); transition: .2s ease; }
     .result-card:hover { border-color: #cdd4ff; box-shadow: 0 10px 24px rgba(36,50,82,.09); transform: translateY(-2px); }
-    .result-card.flat { display: flex; align-items: stretch; }
-    .result-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 5px; padding: 7px 7px 0; }
+    /* Flat scene results use the same vertical card rhythm as grouped video
+       results. A side-by-side layout leaves only a few pixels for the title
+       when the result grid has four or five columns. */
+    .result-card.flat { flex-direction: column; align-items: stretch; }
+    .result-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 4px 0; }
     .result-scene { min-width: 0; overflow: hidden; border-radius: 9px; background: var(--surface-muted); }
-    .result-scene img, .result-scene .placeholder { display: block; width: 100%; height: 120px; object-fit: cover; background: #edf0f5; }
-    .result-card.flat .result-gallery { display: block; flex: 0 0 210px; padding: 0; }
-    .result-card.flat .result-scene { height: 100%; border-radius: 0; }
-    .result-card.flat .result-scene img, .result-card.flat .result-scene .placeholder { height: 100%; min-height: 168px; }
-    .result-card.flat .result-body { display: flex; flex: 1; flex-direction: column; justify-content: center; padding: 18px; }
+    .result-scene img, .result-scene .placeholder { display: block; width: 100%; height: 104px; object-fit: cover; background: #edf0f5; }
+    .result-card.flat .result-gallery { display: block; flex: none; width: 100%; padding: 0; }
+    .result-card.flat .result-scene { height: auto; border-radius: 0; }
+    .result-card.flat .result-scene img, .result-card.flat .result-scene .placeholder { width: 100%; height: auto; min-height: 0; aspect-ratio: 16 / 9; object-fit: cover; }
+    .result-card.flat .result-scene-meta { padding: 7px 10px 5px; font-size: 11px; }
+    .result-card.flat .result-body { justify-content: initial; padding: 11px 15px 15px; }
     .result-scene-meta { display: flex; justify-content: space-between; gap: 4px; padding: 4px 5px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
     .score { color: var(--good); font-weight: 750; }
-    .result-body { padding: 13px 14px 15px; }
-    .result-body { min-width: 0; }
-    .result-body h3 { display: -webkit-box; overflow: hidden; margin-bottom: 4px; font-size: 15px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-    .result-body p { overflow: hidden; margin-bottom: 9px; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-    .result-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+    .result-body { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 0; padding: 14px 15px 15px; }
+    .result-body h3 { display: -webkit-box; overflow: hidden; margin: 0; font-size: 15px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .result-body p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .result-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 2px; color: var(--muted); font-size: 11px; }
     .empty { display: grid; place-items: center; min-height: 210px; padding: 25px; border: 1px dashed #dfe4ee; border-radius: 15px; color: var(--muted); text-align: center; background: rgba(248,250,253,.7); }
     .empty strong { display: block; margin-bottom: 4px; color: #536078; font-size: 14px; }
     .task-dock { position: fixed; z-index: 10; right: 24px; bottom: 22px; width: min(380px, calc(100vw - 32px)); border: 1px solid #dce1ec; border-radius: 17px; background: rgba(255,255,255,.94); box-shadow: 0 18px 50px rgba(36,50,82,.18); backdrop-filter: blur(16px); }
-    .task-dock-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; }
+    .task-dock-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; }
     .task-dock-head button { padding: 3px; border: 0; color: var(--muted); background: transparent; }
+    .task-dock-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; }
+    .task-action { padding: 5px 7px !important; border: 1px solid var(--line) !important; border-radius: 8px; color: #58657d !important; background: #fff !important; font-size: 10px; }
+    .task-action:hover { border-color: #cbd2ff !important; color: var(--accent) !important; background: var(--accent-soft) !important; }
+    .task-action.danger { border-color: #f1ccd4 !important; color: var(--bad) !important; }
     .task-dock-title { font-size: 13px; font-weight: 800; }
     .task-dock-count { margin-left: 5px; padding: 2px 7px; border-radius: 99px; color: var(--accent); background: var(--accent-soft); font-size: 11px; }
     .task-list { max-height: 330px; overflow: auto; padding: 0 14px 8px; border-top: 1px solid var(--line); }
     .task { padding: 11px 0; border-bottom: 1px solid #eef0f5; }
     .task:last-child { border-bottom: 0; }
-    .task-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .task-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .task-select { flex: none; width: 15px; min-height: 15px; padding: 0; accent-color: var(--accent); }
+    .task-title { display: flex; min-width: 0; flex: 1; align-items: center; gap: 7px; }
     .task-name { overflow: hidden; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
     .task-state { flex: none; padding: 3px 7px; border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 10px; }
     .task-state.good { color: var(--good); background: var(--good-soft); }
@@ -122,6 +131,8 @@
     .task-stop { padding: 0; border: 0; color: var(--bad); background: transparent; font-size: 11px; font-weight: 700; }
     dialog { width: min(850px, calc(100vw - 28px)); max-height: calc(100vh - 34px); padding: 0; overflow: hidden; border: 0; border-radius: 23px; color: var(--text); background: var(--surface-solid); box-shadow: 0 28px 80px rgba(30,42,75,.25); }
     dialog:not([open]) { display: none; }
+    dialog.upload-dialog { display: flex; flex-direction: column; width: min(1040px, calc(100vw - 28px)); height: min(820px, calc(100vh - 34px)); }
+    dialog.upload-dialog:not([open]) { display: none; }
     dialog.manage-dialog { display: flex; flex-direction: column; width: min(1080px, calc(100vw - 28px)); height: min(780px, calc(100vh - 34px)); }
     dialog.manage-dialog:not([open]) { display: none; }
     dialog::backdrop { background: rgba(30, 42, 75, .28); backdrop-filter: blur(5px); }
@@ -131,22 +142,50 @@
     .close-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px; color: var(--muted); background: var(--surface-muted); }
     .close-button:hover { color: var(--text); background: var(--line); }
     .dialog-body { padding: 22px 26px 26px; overflow: auto; }
-    .upload-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(270px, .9fr); gap: 18px; }
+    .upload-dialog-body { min-height: 0; overflow: auto; }
+    .upload-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: stretch; }
+    .upload-source-panel, .upload-queue-panel { display: flex; min-width: 0; flex-direction: column; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: #fcfdff; }
+    .upload-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .upload-section-head h3 { margin: 0 0 3px; color: var(--text); font-size: 16px; letter-spacing: -.025em; }
+    .upload-section-head p { margin: 0; color: var(--muted); font-size: 11px; }
+    .step-badge { display: grid; flex: none; place-items: center; width: 25px; height: 25px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); font-size: 11px; font-weight: 800; }
     .field { display: grid; gap: 7px; margin-bottom: 14px; color: #66738b; font-size: 12px; font-weight: 650; }
     .field small { color: var(--muted); font-weight: 500; }
-    .dropzone { display: grid; place-items: center; min-height: 176px; padding: 25px; border: 1.5px dashed #cbd2e2; border-radius: 17px; color: var(--muted); text-align: center; background: #fafbfe; transition: .2s ease; }
-    .dropzone.dragging, .dropzone:hover { border-color: #a8b1ff; color: var(--accent); background: var(--accent-soft); }
-    .dropzone svg { margin-bottom: 9px; color: #7585ed; }
-    .dropzone strong { display: block; margin-bottom: 4px; color: #536078; font-size: 14px; }
-    .dropzone span { display: block; font-size: 12px; }
-    .hidden-input { display: none; }
-    .upload-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: center; margin-top: 4px; }
+    .source-path-entry { display: flex; align-items: flex-end; gap: 10px; }
+    .source-path-entry .field { flex: 1; min-width: 0; margin-bottom: 0; }
+    .source-path-entry input { min-height: 46px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .source-path-entry > button { flex: none; min-height: 46px; }
+    .source-path-help { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .source-summary { min-height: 38px; margin-top: 11px; padding: 9px 11px; overflow-wrap: anywhere; border: 1px solid #dfe4ee; border-radius: 11px; color: var(--muted); background: #fff; font-size: 11px; }
+    .source-summary.has-source { border-color: #cdd4ff; color: #5265d9; background: var(--accent-soft); }
+    .upload-note { margin-top: auto; }
+    .source-directory-tools { margin-top: 15px; padding: 12px 13px 2px; border: 1px solid #dfe4ee; border-radius: 13px; background: #fff; }
+    .source-directory-tools[hidden] { display: none; }
+    .directory-scan-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+    .directory-scan-row strong { display: block; margin-bottom: 2px; color: #536078; font-size: 12px; }
+    .directory-scan-row small { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+    .directory-scan-row small.directory-error { color: var(--bad); }
+    .directory-scan-row button { flex: none; min-height: 36px; padding: 7px 11px; }
+    .checkbox-field { display: flex; align-items: center; gap: 8px; margin: -2px 0 10px; color: #66738b; font-size: 12px; font-weight: 650; }
+    .checkbox-field input { width: 16px; min-height: 16px; padding: 0; accent-color: var(--accent); }
+    .upload-queue-panel { display: flex; flex-direction: column; }
+    .upload-queue-panel .upload-section-head { align-items: center; }
+    .queue-actions { justify-content: flex-end; }
+    .file-queue { min-height: 265px; max-height: 360px; }
+    .processing-options { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+    .processing-options .upload-section-head { margin-bottom: 10px; }
+    .processing-options .field:last-child { margin-bottom: 0; }
+    .processing-options select { min-height: 46px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 13px; color: var(--text); background: #fff; }
+    .upload-footer { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--line); }
+    .upload-footer .inline-actions { margin-left: auto; }
     .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .file-queue { min-height: 176px; max-height: 300px; overflow: auto; padding: 4px 0; border: 1px solid var(--line); border-radius: 15px; background: #fcfdff; }
     .queue-empty { display: grid; place-items: center; min-height: 165px; padding: 20px; color: var(--muted); text-align: center; font-size: 12px; white-space: pre-line; }
     .file-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #eef0f5; }
     .file-row:last-child { border-bottom: 0; }
-    .file-info { min-width: 0; }
+    .file-row input[type=checkbox] { flex: none; width: 16px; min-height: 16px; padding: 0; accent-color: var(--accent); }
+    .file-row.is-unselected { opacity: .58; background: #f7f8fb; }
+    .file-info { flex: 1; min-width: 0; }
     .file-name { overflow: hidden; color: #42506a; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
     .file-path { overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
     .file-status { flex: none; padding: 3px 7px; border-radius: 7px; color: var(--warn); background: var(--warn-soft); font-size: 10px; }
@@ -158,15 +197,30 @@
     .upload-note strong { color: #55637b; }
     .manage-layout { display: grid; flex: 1; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; overflow: hidden; }
     .library-list { min-height: 0; overflow-y: auto; padding: 14px; border-right: 1px solid var(--line); background: #fafbfe; scrollbar-gutter: stable; }
-    .library-item { display: block; width: 100%; margin-bottom: 7px; padding: 12px; border: 1px solid transparent; border-radius: 13px; color: var(--text); text-align: left; background: transparent; }
+    .library-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .manage-toolbar { flex: 0 0 auto; margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+    .manage-toolbar .library-selection-count { width: auto; margin-right: auto; }
+    .manage-toolbar select { flex: 0 1 230px; }
+    .library-toolbar select { flex: 1 1 120px; min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: #fff; font-size: 11px; }
+    .library-toolbar .secondary-button, .library-toolbar .primary-button, .library-toolbar .danger-button { min-height: 34px; padding: 6px 9px; font-size: 11px; }
+    .library-selection-count { width: 100%; color: var(--muted); font-size: 11px; }
+    .library-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin-bottom: 7px; padding: 12px; border: 1px solid transparent; border-radius: 13px; color: var(--text); text-align: left; background: transparent; }
     .library-item:hover, .library-item.active { border-color: #d5d9ff; background: var(--accent-soft); }
+    .library-item input[type=checkbox] { flex: none; width: 16px; min-height: 16px; margin-top: 1px; accent-color: var(--accent); }
+    .library-item-content { min-width: 0; }
     .library-item-title { overflow: hidden; margin-bottom: 3px; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
     .library-item-meta { color: var(--muted); font-size: 11px; }
     .manage-detail { min-height: 0; overflow-y: auto; padding: 23px 25px 27px; scrollbar-gutter: stable; }
     .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 18px; }
+    .detail-head > div { min-width: 0; width: 100%; }
     .detail-head h3 { margin: 0 0 5px; font-size: 21px; letter-spacing: -.04em; }
-    .detail-path { max-width: 560px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-head h3 { overflow-wrap: anywhere; }
+    .detail-path { max-width: none; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .detail-stats { display: flex; flex-wrap: wrap; gap: 7px 15px; color: var(--muted); font-size: 11px; }
+    .detail-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 11px; }
+    .detail-actions select { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: #fff; font-size: 11px; }
+    .detail-actions .secondary-button, .detail-actions .danger-button { min-height: 36px; padding: 7px 11px; font-size: 11px; }
+    .embedding-profile-note { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
     .frame-card { overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
     .frame-card img, .frame-card .placeholder { display: block; width: 100%; height: 112px; object-fit: cover; background: #eef1f6; }
@@ -178,6 +232,8 @@
     .alipan-status strong { display: block; margin-bottom: 2px; color: var(--text); font-size: 13px; }
     .alipan-status small { display: block; font-size: 11px; }
     .alipan-status.good { border-color: #c8eddf; background: var(--good-soft); }
+    .alipan-status .status-logout { flex: none; min-height: 32px; padding: 6px 10px; font-size: 11px; }
+    .alipan-browser:not([hidden]) + .inline-actions { display: none; }
     .alipan-login-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 22px; align-items: center; }
     .alipan-qr { display: block; width: 220px; height: 220px; padding: 10px; border: 1px solid var(--line); border-radius: 15px; background: #fff; }
     .alipan-link { overflow-wrap: anywhere; color: var(--accent); font-size: 11px; }
@@ -195,6 +251,7 @@
     .alipan-file-row.folder { background: #fafbff; }
     .alipan-file-row input[type=checkbox] { flex: none; width: 16px; min-height: 16px; accent-color: var(--accent); }
     .alipan-file-row .file-kind { flex: none; width: 25px; color: var(--accent); font-size: 16px; text-align: center; }
+    .alipan-file-row .file-kind svg { display: block; width: 19px; height: 19px; margin: 0 auto; }
     .alipan-file-row .file-info { flex: 1; }
     .alipan-file-actions { display: flex; flex: none; align-items: center; gap: 5px; }
     .alipan-file-actions button { min-height: 29px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; color: #58657d; background: #fff; font-size: 10px; }
@@ -213,9 +270,7 @@
       .upload-grid, .manage-layout { grid-template-columns: 1fr; }
       .library-list { max-height: 205px; border-right: 0; border-bottom: 1px solid var(--line); }
       .manage-detail { min-height: 390px; }
-      .result-card.flat { display: block; }
-      .result-card.flat .result-gallery { width: 100%; }
-      .result-card.flat .result-scene img, .result-card.flat .result-scene .placeholder { height: 160px; min-height: 0; }
+      .result-card.flat .result-body { padding: 10px 13px 14px; }
       .alipan-login-grid { grid-template-columns: 1fr; justify-items: center; }
       .alipan-login-grid > div:last-child { width: 100%; }
       .alipan-browser-toolbar { align-items: stretch; flex-direction: column; }
@@ -250,23 +305,37 @@
     </main>
   </div>
 
-  <aside id="task-dock" class="task-dock" hidden><div class="task-dock-head"><div><span class="task-dock-title">处理队列</span><span id="task-count" class="task-dock-count">0</span></div><button id="task-toggle" aria-label="折叠处理队列">⌄</button></div><div id="task-list" class="task-list"></div></aside>
+  <aside id="task-dock" class="task-dock" hidden><div class="task-dock-head"><div><span class="task-dock-title">处理队列</span><span id="task-count" class="task-dock-count">0</span></div><div class="task-dock-actions"><button id="task-select-toggle" class="task-action" type="button">全选</button><button id="task-select-invert" class="task-action" type="button">反选</button><button id="task-stop-selected" class="task-action" type="button" disabled>停止选中</button><button id="task-remove-selected" class="task-action danger" type="button" disabled>删除已选</button><button id="task-clear" class="task-action danger" type="button" title="清除所有已完成、失败和已停止的任务记录">清理终态</button><button id="task-toggle" type="button" aria-label="折叠处理队列">⌄</button></div></div><div id="task-list" class="task-list"></div></aside>
 
-  <dialog id="upload-dialog">
-    <div class="dialog-head"><div><h2>上传与处理</h2><p>只读取本地文件路径，原视频不会复制到索引目录。</p></div><button class="close-button" data-close="upload-dialog" aria-label="关闭">×</button></div>
-    <div class="dialog-body"><div class="upload-grid"><div>
-      <label class="field">文件或目录路径 <small>支持每行一个文件路径；目录可递归扫描视频文件</small><textarea id="path-input" placeholder="/mnt/e/Movies/movie.mp4
-/mnt/e/Movies/another.mkv"></textarea></label>
-      <label class="field">目录扫描 <div style="display:flex; gap:8px"><input id="directory-path" placeholder="/mnt/e/Movies"><button id="scan-directory" type="button" class="secondary-button">扫描目录</button></div></label>
-      <label class="field" style="display:flex; align-items:center; flex-direction:row; gap:8px"><input id="recursive-scan" type="checkbox" checked style="width:16px; min-height:16px; accent-color:var(--accent)"><span>递归扫描子目录</span></label>
-      <div id="dropzone" class="dropzone" tabindex="0"><div><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/></svg><strong>拖拽文件到这里</strong><span>也可以选择文件或目录</span><div class="inline-actions" style="justify-content:center; margin-top:12px"><button id="choose-files" type="button" class="secondary-button">选择文件</button><button id="choose-directory" type="button" class="secondary-button">选择目录</button></div><input id="file-picker" class="hidden-input" type="file" multiple accept="video/*"><input id="directory-picker" class="hidden-input" type="file" webkitdirectory directory multiple></div></div>
-      <p class="upload-note"><strong>浏览器提示：</strong>出于安全限制，普通浏览器拖拽/选择文件通常不会暴露服务器绝对路径；若列表显示“需要绝对路径”，请把 Go 服务所在机器上的路径粘贴到上方。桌面壳或已授权环境会自动读取文件路径。</p>
-    </div><div>
-      <div class="section-head" style="margin-bottom:10px"><h2 style="font-size:14px">待处理文件</h2><span id="queue-count" class="section-hint">0 个</span></div><div id="file-queue" class="file-queue"><div class="queue-empty">还没有文件
+  <dialog id="upload-dialog" class="upload-dialog">
+    <div class="dialog-head"><div><h2>添加与处理</h2><p>输入本地文件或目录路径，服务端只读取原路径，不复制原视频。</p></div><button class="close-button" data-close="upload-dialog" aria-label="关闭">×</button></div>
+    <div class="dialog-body upload-dialog-body">
+      <div class="upload-grid">
+        <section class="upload-source-panel">
+          <div class="upload-section-head"><div><h3>添加来源</h3><p>输入 Go 服务所在机器上的文件或目录路径</p></div><span class="step-badge">1</span></div>
+          <div class="source-path-entry"><label class="field">Windows 文件或目录地址<input id="source-path-input" type="text" spellcheck="false" autocomplete="off" placeholder="E:/Movies/movie.mp4 或 E:/Movies"></label><button id="inspect-source" type="button" class="secondary-button">检查路径</button></div>
+          <p class="source-path-help">支持 Windows 路径 <code>E:/Movies/movie.mp4</code> 和 WSL 路径 <code>/mnt/e/Movies/movie.mp4</code>。原视频不会上传或复制。</p>
+          <div id="source-summary" class="source-summary">尚未添加文件或目录</div>
+          <div id="directory-tools" class="source-directory-tools" hidden>
+            <div class="directory-scan-row"><div><strong>当前目录</strong><small id="directory-summary">可扫描目录中的视频文件</small></div><button id="scan-directory" type="button" class="secondary-button">扫描目录</button></div>
+            <label class="checkbox-field"><input id="recursive-scan" type="checkbox" checked><span>递归扫描子目录</span></label>
+          </div>
+          <p class="upload-note"><strong>路径说明：</strong>Windows 路径会由 Go 服务转换为对应的 WSL 路径后检查。请确认该路径在 Go 服务所在机器上可访问。</p>
+        </section>
+
+        <section class="upload-queue-panel">
+          <div class="upload-section-head"><div><h3>待处理文件</h3><p id="queue-count">0 个文件</p></div><div class="inline-actions queue-actions"><button id="file-select-toggle" type="button" class="secondary-button">全选</button><button id="file-select-invert" type="button" class="secondary-button">反选</button><button id="file-selection-clear" type="button" class="secondary-button" disabled>清除所选</button></div></div>
+          <div id="file-queue" class="file-queue"><div class="queue-empty">还没有文件
 添加文件或扫描目录后会显示可用性</div></div>
-      <div class="upload-actions" style="margin-top:14px"><span id="upload-message" class="section-hint">先检查路径是否可用</span><div class="inline-actions"><button id="validate-files" type="button" class="secondary-button">检查可用性</button><button id="start-import" type="button" class="primary-button">开始批量处理</button></div></div>
-      <label class="field" style="margin-top:18px">单个任务标题（可选）<input id="import-title" placeholder="批量时默认使用文件名"></label><label class="field">处理模式<select id="import-mode" style="min-height:44px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; color:var(--text); background:#fff"><option value="fast" selected>快速采样（最多 32 帧）</option><option value="accurate">关键帧检测（更精确）</option></select></label>
-    </div></div></div>
+          <div class="processing-options">
+            <div class="upload-section-head"><div><h3>处理设置</h3><p>可在提交前调整本次任务</p></div></div>
+            <label class="field">任务标题（单个文件时可选）<input id="import-title" placeholder="默认使用文件名"></label>
+            <label class="field">处理模式<select id="import-mode"><option value="fast" selected>快速采样（最多 32 帧）</option><option value="accurate">关键帧检测（最多 240 帧）</option></select></label>
+          </div>
+        </section>
+      </div>
+      <div class="upload-footer"><span id="upload-message" class="section-hint">先检查路径是否可用</span><div class="inline-actions"><button id="validate-files" type="button" class="secondary-button">检查可用性</button><button id="start-import" type="button" class="primary-button">开始批量处理</button></div></div>
+    </div>
   </dialog>
 
   <dialog id="alipan-dialog">
@@ -286,18 +355,19 @@
         <div class="alipan-selection"><small id="alipan-selection-count">已选择 0 个视频</small><div class="inline-actions"><button id="alipan-select-all" type="button" class="secondary-button">全选当前页</button><button id="alipan-process-selected" type="button" class="primary-button">处理选中视频</button></div></div>
         <p id="alipan-file-message" class="alipan-file-message">只读取文件元数据；开始处理后，服务端会按需拉取视频流并提取关键帧。</p>
       </div>
-      <div class="inline-actions"><button id="alipan-start" type="button" class="primary-button">扫码登录</button><button id="alipan-logout" type="button" class="secondary-button" hidden>退出当前账户</button></div>
+      <div id="alipan-login-actions" class="inline-actions"><button id="alipan-start" type="button" class="primary-button">扫码登录</button><button id="alipan-logout" type="button" class="secondary-button" hidden>退出当前账户</button></div>
     </div>
   </dialog>
 
   <dialog id="manage-dialog" class="manage-dialog">
     <div class="dialog-head"><div><h2>已处理文件</h2><p>查看索引中的视频、关键帧与向量；删除关键帧会同步删除对应向量。</p></div><button class="close-button" data-close="manage-dialog" aria-label="关闭">×</button></div>
+    <div id="library-toolbar" class="library-toolbar manage-toolbar" hidden></div>
     <div class="manage-layout"><div id="library-list" class="library-list"><div class="queue-empty">正在加载…</div></div><div id="manage-detail" class="manage-detail"><div class="empty"><div><strong>选择一个视频</strong>查看已提取的关键帧</div></div></div></div>
   </dialog>
 
   <script>
     const stages = { queued: '排队中', parsing: '解析', detecting_scenes: '分镜', extracting_frames: '提取画面', embedding: '生成嵌入', completed: '已完成', failed: '失败', canceled: '已停止' };
-    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedMedia: null, taskExpanded: true, refreshToken: 0, alipanSession: '', alipanMode: '', alipanPoll: null, alipanPollGeneration: 0, alipanPollInFlight: false, alipanPollInFlightGeneration: 0, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
+    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, alipanSession: '', alipanMode: '', alipanPoll: null, alipanPollGeneration: 0, alipanPollInFlight: false, alipanPollInFlightGeneration: 0, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
     const $ = (selector) => document.querySelector(selector);
     const formatSeconds = (value) => { const seconds = Number(value || 0); if (seconds < 60) return `${seconds.toFixed(1)}s`; const minutes = Math.floor(seconds / 60), rest = Math.floor(seconds % 60); return `${minutes}m ${String(rest).padStart(2, '0')}s`; };
     const formatBytes = (value) => { const bytes = Number(value || 0); if (!bytes) return ''; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`; return `${(bytes / 1024 / 1024).toFixed(1)} MB`; };
@@ -329,7 +399,8 @@
     function enterAlipanFolder(folder) { state.alipanPath.push({ id: folder.file_id, name: folder.name || folder.file_id }); state.alipanParent = folder.file_id; state.alipanMarker = ''; state.alipanFiles = []; state.alipanLoadedDrive = ''; $('#alipan-breadcrumb').textContent = ['根目录', ...state.alipanPath.map(item => item.name)].join(' / '); void loadAlipanFiles(); }
     function leaveAlipanFolder() { if (!state.alipanPath.length) return; state.alipanPath.pop(); state.alipanParent = state.alipanPath.at(-1)?.id || 'root'; state.alipanMarker = ''; state.alipanFiles = []; state.alipanLoadedDrive = ''; $('#alipan-breadcrumb').textContent = ['根目录', ...state.alipanPath.map(item => item.name)].join(' / '); void loadAlipanFiles(); }
     function alipanTaskRequest(file) { const fingerprint = file.content_hash || `${state.alipanDrive}:${file.file_id}:${file.size || 0}:${file.updated_at || ''}`; return { source: 'alipan', drive_id: file.drive_id || state.alipanDrive, file_id: file.file_id, source_name: file.name, source_fingerprint: fingerprint, type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#alipan-process-mode').value === 'fast' }; }
-    async function createAlipanTasks(files, manageButtons = true) { const candidates = files.filter(file => file && file.file_id && isAlipanVideo(file)); if (!candidates.length) { if (manageButtons) $('#alipan-file-message').textContent = '没有可处理的视频文件'; return { created: 0, failed: 0 }; } const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); if (manageButtons) { selectedButton.disabled = true; folderButton.disabled = true; } let created = 0; let failed = 0; $('#alipan-file-message').textContent = `正在创建 ${candidates.length} 个云盘视频任务…`; try { for (const file of candidates) { try { const task = await requestJSON('/v1/acquisitions', jsonOptions(alipanTaskRequest(file))); created++; state.tasks = [task, ...state.tasks.filter(item => item.id !== task.id)]; renderTasks(state.tasks); } catch (error) { failed++; } } state.alipanSelected.clear(); renderAlipanFiles(); $('#alipan-file-message').textContent = `已提交 ${created} 个任务${failed ? `，${failed} 个提交失败` : ''}；后续会自动完成元信息、I 帧/画面提取和 embedding。`; await refresh(); return { created, failed }; } finally { if (manageButtons) { selectedButton.disabled = false; folderButton.disabled = false; } } }
+    async function submitAcquisitionBatch(items) { const data = await requestJSON('/v1/acquisitions/batch', jsonOptions({ items })); const tasks = data.tasks || []; if (tasks.length) { state.tasks = [...tasks, ...state.tasks.filter(task => !tasks.some(created => created.id === task.id))]; renderTasks(state.tasks); } return data; }
+    async function createAlipanTasks(files, manageButtons = true) { const candidates = files.filter(file => file && file.file_id && isAlipanVideo(file)); if (!candidates.length) { if (manageButtons) $('#alipan-file-message').textContent = '没有可处理的视频文件'; return { created: 0, failed: 0 }; } const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); if (manageButtons) { selectedButton.disabled = true; folderButton.disabled = true; } $('#alipan-file-message').textContent = `正在提交 ${candidates.length} 个云盘视频任务…`; try { let data; try { data = await submitAcquisitionBatch(candidates.map(alipanTaskRequest)); } catch (error) { $('#alipan-file-message').textContent = `批量提交失败：${error.message}`; return { created: 0, failed: candidates.length }; } const failed = data.failures?.length || 0; state.alipanSelected.clear(); renderAlipanFiles(); $('#alipan-file-message').textContent = `已提交 ${data.tasks?.length || 0} 个任务${failed ? `，${failed} 个提交失败` : ''}；任务会排队处理，后续自动完成元信息、I 帧/画面提取和 embedding。`; await refresh(); if (manageButtons && data.tasks?.length) closeDialog($('#alipan-dialog')); return { created: data.tasks?.length || 0, failed }; } finally { if (manageButtons) { selectedButton.disabled = false; folderButton.disabled = false; } } }
     async function processAlipanFolder(parentFileID = state.alipanParent, folderName = '当前目录') { if (!state.alipanDrive || state.alipanFolderScan) return; const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); const controller = new AbortController(); state.alipanFolderScan = controller; selectedButton.disabled = true; folderButton.disabled = false; folderButton.textContent = '停止扫描'; $('#alipan-file-message').textContent = `正在扫描${folderName}中的视频，发现后会立即创建任务…`; const queue = [{ id: parentFileID, name: folderName }]; const visited = new Set(); let folders = 0; let videos = 0; let failed = 0; try { while (queue.length) { const current = queue.shift(); if (!current.id || visited.has(current.id)) continue; visited.add(current.id); folders++; $('#alipan-file-message').textContent = `正在扫描 ${current.name}（已检查 ${folders} 个目录，已提交 ${videos} 个视频）…`; const items = await listAlipanDirectory(current.id, controller.signal); const currentVideos = items.filter(isAlipanVideo); const result = await createAlipanTasks(currentVideos, false); videos += result.created; failed += result.failed; for (const item of items) { if (String(item.type || '').toLowerCase() === 'folder' && item.file_id && !visited.has(item.file_id)) queue.push({ id: item.file_id, name: item.name || item.file_id }); } } $('#alipan-file-message').textContent = `目录扫描完成：检查 ${folders} 个目录，提交 ${videos} 个视频任务${failed ? `，${failed} 个失败` : ''}。`; } catch (error) { if (error.name === 'AbortError') $('#alipan-file-message').textContent = `已停止目录扫描，已提交 ${videos} 个视频任务。`; else $('#alipan-file-message').textContent = `扫描云盘目录失败：${error.message}`; } finally { state.alipanFolderScan = null; selectedButton.disabled = false; folderButton.disabled = false; folderButton.textContent = '处理当前目录'; await refresh(); } }
 
     function renderResults(data) {
@@ -343,19 +414,150 @@
     async function search() { const query = $('#query').value.trim(); if (!query) return; const limit = Math.max(1, Math.min(100, Number($('#result-limit').value) || 16)); const minScore = Number($('#min-score').value) || 0; $('#search-message').textContent = '正在搜索…'; try { const data = await requestJSON('/v1/search', jsonOptions({ query, limit, min_score: minScore, mode: state.mode })); $('#search-message').textContent = `找到 ${data.results.length} ${state.mode === 'scene' ? '个片段' : '部视频'} · 相关度 > ${minScore.toFixed(2)}`; renderResults(data); } catch (error) { $('#search-message').textContent = `搜索失败：${error.message}`; } }
 
     function renderTasks(tasks) {
-      state.tasks = tasks; const dock = $('#task-dock'); const list = $('#task-list'); $('#task-count').textContent = tasks.length; dock.hidden = tasks.length === 0; list.hidden = !state.taskExpanded; $('#task-toggle').textContent = state.taskExpanded ? '⌄' : '⌃'; list.replaceChildren(); if (!tasks.length) return;
-      for (const task of tasks) { const item = document.createElement('div'); item.className = 'task'; const head = document.createElement('div'); head.className = 'task-head'; const name = document.createElement('div'); name.className = 'task-name'; name.textContent = task.media?.title || task.source_name || task.local_path?.split('/').pop() || `任务 ${task.id.slice(0, 8)}`; const status = document.createElement('span'); status.className = `task-state ${task.state === 'completed' ? 'good' : task.state === 'failed' ? 'bad' : task.state === 'canceled' ? 'warn' : ''}`; status.textContent = task.state === 'failed' ? '失败' : stageLabel(task.state === 'running' ? task.stage : task.state); head.append(name, status); const bar = document.createElement('div'); bar.className = 'task-bar'; const fill = document.createElement('i'); fill.style.width = `${Math.max(0, Math.min(100, Number(task.percent || 0) * 100))}%`; bar.append(fill); const footer = document.createElement('div'); footer.className = 'task-footer'; const message = document.createElement('span'); message.textContent = task.error || task.message || `${Math.round(Number(task.percent || 0) * 100)}%`; footer.append(message); if (!terminal(task)) { const stop = document.createElement('button'); stop.className = 'task-stop'; stop.textContent = '停止'; stop.dataset.stopTask = task.id; footer.append(stop); } item.append(head, bar, footer); list.append(item); }
+      state.tasks = tasks;
+      const taskIDs = new Set(tasks.map(task => task.id));
+      for (const taskID of state.selectedTasks) if (!taskIDs.has(taskID)) state.selectedTasks.delete(taskID);
+      const selectedTasks = tasks.filter(task => state.selectedTasks.has(task.id));
+      const stoppable = selectedTasks.filter(task => !terminal(task));
+      const removable = selectedTasks.filter(task => terminal(task));
+      const dock = $('#task-dock');
+      const list = $('#task-list');
+      $('#task-count').textContent = tasks.length;
+      dock.hidden = tasks.length === 0;
+      list.hidden = !state.taskExpanded;
+      $('#task-toggle').textContent = state.taskExpanded ? '⌄' : '⌃';
+      const selectToggle = $('#task-select-toggle');
+      selectToggle.disabled = !tasks.length;
+      selectToggle.textContent = tasks.length && selectedTasks.length === tasks.length ? '取消全选' : '全选';
+      $('#task-select-invert').disabled = !tasks.length;
+      const stopSelected = $('#task-stop-selected');
+      stopSelected.disabled = stoppable.length === 0;
+      stopSelected.textContent = stoppable.length ? '停止选中 ' + stoppable.length : '停止选中';
+      const removeSelected = $('#task-remove-selected');
+      removeSelected.disabled = removable.length === 0;
+      removeSelected.textContent = removable.length ? '删除已选 ' + removable.length : '删除已选';
+      list.replaceChildren();
+      if (!tasks.length) return;
+      for (const task of tasks) {
+        const item = document.createElement('div');
+        item.className = 'task';
+        const head = document.createElement('div');
+        head.className = 'task-head';
+        const title = document.createElement('div');
+        title.className = 'task-title';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'task-select';
+        checkbox.checked = state.selectedTasks.has(task.id);
+        checkbox.dataset.taskCheckbox = task.id;
+        checkbox.setAttribute('aria-label', '选择任务');
+        const name = document.createElement('div');
+        name.className = 'task-name';
+        name.textContent = task.media?.title || task.source_name || task.local_path?.split('/').pop() || `任务 ${task.id.slice(0, 8)}`;
+        title.append(checkbox, name);
+        const status = document.createElement('span');
+        status.className = `task-state ${task.state === 'completed' ? 'good' : task.state === 'failed' ? 'bad' : task.state === 'canceled' ? 'warn' : ''}`;
+        status.textContent = task.state === 'failed' ? '失败' : stageLabel(task.state === 'running' ? task.stage : task.state);
+        head.append(title, status);
+        const bar = document.createElement('div');
+        bar.className = 'task-bar';
+        const fill = document.createElement('i');
+        fill.style.width = `${Math.max(0, Math.min(100, Number(task.percent || 0) * 100))}%`;
+        bar.append(fill);
+        const footer = document.createElement('div');
+        footer.className = 'task-footer';
+        const message = document.createElement('span');
+        message.textContent = task.error || task.message || `${Math.round(Number(task.percent || 0) * 100)}%`;
+        footer.append(message);
+        if (!terminal(task)) {
+          const stop = document.createElement('button');
+          stop.className = 'task-stop';
+          stop.type = 'button';
+          stop.textContent = '停止';
+          stop.dataset.stopTask = task.id;
+          footer.append(stop);
+        } else {
+          const remove = document.createElement('button');
+          remove.className = 'task-stop';
+          remove.type = 'button';
+          remove.textContent = '清除';
+          remove.title = '从列表移除这条记录';
+          remove.dataset.removeTask = task.id;
+          footer.append(remove);
+        }
+        item.append(head, bar, footer);
+        list.append(item);
+      }
     }
     async function refresh() { const token = ++state.refreshToken; const [healthResult, tasksResult, mediaResult] = await Promise.allSettled([requestJSON('/healthz'), requestJSON('/v1/acquisitions'), requestJSON('/v1/media')]); if (token !== state.refreshToken) return; if (tasksResult.status === 'fulfilled') renderTasks(tasksResult.value); if (healthResult.status === 'fulfilled') { const health = healthResult.value; setHealth(`${health.scene_count || 0} 个画面已索引`, health.status === 'ok' && health.embedding_status === 'ok', health.status !== 'ok'); } else { setHealth('服务部分不可用', false, true); } if (mediaResult.status === 'fulfilled') { state.media = mediaResult.value; if ($('#manage-dialog').open) renderLibrary(); } }
 
     function addFile(path, name, note = '') { const cleanPath = String(path || '').trim(); const cleanName = String(name || cleanPath.split(/[\\/]/).pop() || '未命名文件'); const duplicate = state.files.find(file => (cleanPath && file.path === cleanPath) || (!cleanPath && file.name === cleanName)); if (duplicate) return; state.files.push({ path: cleanPath, name: cleanName, note, size: 0, available: false, status: 'pending' }); renderQueue(); }
-    function pathFromFile(file) { const path = file.path || file.localPath || file.fullPath || ''; return /^(\/|[A-Za-z]:[\\/])/.test(path) ? path : ''; }
-    function addPickedFiles(fileList) { for (const file of fileList) { const path = pathFromFile(file); addFile(path, file.webkitRelativePath || file.name, path ? '' : '浏览器未提供绝对路径'); } }
+    function updateSourceSummary(text, active = true) { const node = $('#source-summary'); node.textContent = text; node.classList.toggle('has-source', active); }
+    function setDirectorySummary(text, error = false) {
+      const node = $('#directory-summary');
+      node.textContent = text;
+      node.classList.toggle('directory-error', error);
+    }
+    function renderDirectoryTools() {
+      const root = $('#directory-tools');
+      const visible = state.sourceKind === 'directory';
+      root.hidden = !visible;
+      if (!visible) return;
+      if (state.sourceDirectoryPath) {
+        setDirectorySummary('待扫描：' + state.sourceDirectoryPath);
+      } else {
+        setDirectorySummary('未获得服务端绝对路径；当前浏览器只能提供目录名，无法扫描', true);
+      }
+    }
+    async function inspectSourcePath() {
+      const input = $('#source-path-input');
+      const value = input.value.trim();
+      if (!value) {
+        updateSourceSummary('请输入 Windows 或 WSL 文件/目录路径', false);
+        $('#upload-message').textContent = '请先输入路径';
+        input.focus();
+        return;
+      }
+      const button = $('#inspect-source');
+      button.disabled = true;
+      $('#upload-message').textContent = '正在检查路径…';
+      try {
+        const data = await requestJSON('/v1/files/inspect', jsonOptions({ path: value }));
+        state.files = [];
+        state.sourceKind = data.kind || '';
+        state.sourceDirectoryPath = data.kind === 'directory' ? data.path : '';
+        state.sourceDirectoryName = data.kind === 'directory' ? data.name : '';
+        if (data.kind === 'directory' && data.available) {
+          updateSourceSummary('目录：' + data.path + ' · 点击“扫描目录”获取视频文件');
+          renderDirectoryTools();
+          renderQueue();
+          $('#upload-message').textContent = '目录已确认，请设置递归选项后点击“扫描目录”';
+          return;
+        }
+        if (data.kind === 'file') {
+          state.files.push({ path: data.path, name: data.name, size: data.size || 0, available: Boolean(data.available), status: data.available ? 'valid' : 'invalid', note: data.error || '' });
+          updateSourceSummary(data.available ? '文件：' + data.path + ' · 已检查可用' : '文件：' + data.path + ' · ' + (data.error || '不可用'), data.available);
+          renderDirectoryTools();
+          renderQueue();
+          $('#upload-message').textContent = data.available ? '文件已加入待处理列表，可以开始处理' : '文件不可用，请修改路径后重新检查';
+          return;
+        }
+        state.sourceDirectoryPath = '';
+        state.sourceDirectoryName = '';
+        updateSourceSummary('路径：' + (data.path || value) + ' · ' + (data.error || '无法访问'), false);
+        renderDirectoryTools();
+        renderQueue();
+        $('#upload-message').textContent = '路径检查失败：' + (data.error || '无法访问');
+      } catch (error) {
+        $('#upload-message').textContent = '路径检查失败：' + error.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
     function renderQueue() { const root = $('#file-queue'); $('#queue-count').textContent = `${state.files.length} 个`; root.replaceChildren(); if (!state.files.length) { const empty = document.createElement('div'); empty.className = 'queue-empty'; empty.textContent = '还没有文件\n添加文件或扫描目录后会显示可用性'; root.append(empty); return; } for (const file of state.files) { const row = document.createElement('div'); row.className = 'file-row'; const info = document.createElement('div'); info.className = 'file-info'; const name = document.createElement('div'); name.className = 'file-name'; name.textContent = file.name; const path = document.createElement('div'); path.className = 'file-path'; path.textContent = file.path || file.note || '需要粘贴服务端绝对路径'; info.append(name, path); const status = document.createElement('span'); status.className = `file-status ${file.available ? 'ok' : file.status === 'invalid' ? 'bad' : ''}`; status.textContent = file.available ? `可用${file.size ? ` · ${formatBytes(file.size)}` : ''}` : file.status === 'invalid' ? '不可用' : '待检查'; const remove = document.createElement('button'); remove.className = 'remove-file'; remove.textContent = '移除'; remove.dataset.removeFile = file.path || file.name; row.append(info, status, remove); root.append(row); } }
-    function addTextPaths() { const textarea = $('#path-input'); for (const path of textarea.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) addFile(path, path.split(/[\\/]/).pop()); textarea.value = ''; }
-    async function validateFiles() { addTextPaths(); const candidates = state.files.filter(file => file.path); if (!candidates.length) { $('#upload-message').textContent = '请先粘贴服务端绝对路径，或使用目录扫描'; return; } $('#validate-files').disabled = true; $('#upload-message').textContent = '正在检查文件…'; try { const data = await requestJSON('/v1/files/validate', jsonOptions({ paths: candidates.map(file => file.path) })); for (const checked of data.files || []) { const file = state.files.find(item => item.path === checked.path || item.path === checked.path.replace(/\\/g, '/')); if (file) Object.assign(file, { path: checked.path, name: checked.name, size: checked.size, available: checked.available, status: checked.available ? 'valid' : 'invalid', note: checked.error || '' }); } renderQueue(); const valid = state.files.filter(file => file.available).length; $('#upload-message').textContent = `${valid} 个文件可处理${valid < state.files.length ? `，${state.files.length - valid} 个需要修正` : ''}`; } catch (error) { $('#upload-message').textContent = `检查失败：${error.message}`; } finally { $('#validate-files').disabled = false; } }
-    async function scanDirectory() { addTextPaths(); const directory = $('#directory-path').value.trim(); if (!directory) { $('#upload-message').textContent = '请填写目录绝对路径'; return; } $('#scan-directory').disabled = true; $('#upload-message').textContent = '正在扫描目录…'; try { const data = await requestJSON('/v1/files/scan', jsonOptions({ directory, recursive: $('#recursive-scan').checked })); state.files = (data.files || []).map(file => ({ ...file, status: file.available ? 'valid' : 'invalid', note: file.error || '' })); renderQueue(); $('#upload-message').textContent = `发现 ${state.files.length} 个视频文件，其中 ${state.files.filter(file => file.available).length} 个可处理`; } catch (error) { $('#upload-message').textContent = `扫描失败：${error.message}`; } finally { $('#scan-directory').disabled = false; } }
-    async function startImport() { addTextPaths(); const valid = state.files.filter(file => file.available); if (!valid.length) { $('#upload-message').textContent = '请先检查路径可用性'; return; } $('#start-import').disabled = true; $('#upload-message').textContent = `正在创建 ${valid.length} 个任务…`; let created = 0; try { for (const file of valid) { try { const task = await requestJSON('/v1/acquisitions', jsonOptions({ local_path: file.path, title: valid.length === 1 ? $('#import-title').value.trim() : '', type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#import-mode').value === 'fast' })); created++; state.tasks = [task, ...state.tasks.filter(item => item.id !== task.id)]; renderTasks(state.tasks); } catch (error) { file.status = 'invalid'; file.note = error.message; } } renderQueue(); $('#upload-message').textContent = `已创建 ${created} 个任务，可在右下角查看进度`; if (created) { await refresh(); setTimeout(() => closeDialog($('#upload-dialog')), 350); } } finally { $('#start-import').disabled = false; } }
+    async function validateFiles() { const candidates = state.files.filter(file => file.path); if (!candidates.length) { $('#upload-message').textContent = '请先输入并检查一个文件路径'; return; } $('#validate-files').disabled = true; $('#upload-message').textContent = '正在检查文件…'; try { const data = await requestJSON('/v1/files/validate', jsonOptions({ paths: candidates.map(file => file.path) })); for (const checked of data.files || []) { const file = state.files.find(item => item.path === checked.path || item.path === checked.path.replace(/\\/g, '/')); if (file) Object.assign(file, { path: checked.path, name: checked.name, size: checked.size, available: checked.available, status: checked.available ? 'valid' : 'invalid', note: checked.error || '' }); } renderQueue(); const valid = state.files.filter(file => file.available).length; $('#upload-message').textContent = `${valid} 个文件可处理${valid < state.files.length ? `，${state.files.length - valid} 个需要修正` : ''}`; } catch (error) { $('#upload-message').textContent = `检查失败：${error.message}`; } finally { $('#validate-files').disabled = false; } }
+    async function scanDirectory() { const directory = state.sourceDirectoryPath.trim(); if (!directory || state.sourceKind !== 'directory') { const message = '请先输入并检查一个目录路径'; setDirectorySummary(message, true); updateSourceSummary('尚未确认可扫描的目录', false); $('#upload-message').textContent = message; return; } $('#scan-directory').disabled = true; setDirectorySummary('正在扫描：' + directory); $('#upload-message').textContent = '正在扫描目录…'; try { const data = await requestJSON('/v1/files/scan', jsonOptions({ directory, recursive: $('#recursive-scan').checked })); state.sourceKind = 'directory'; state.sourceDirectoryPath = data.directory || directory; state.files = (data.files || []).map(file => ({ ...file, status: file.available ? 'valid' : 'invalid', note: file.error || '', selected: true })); updateSourceSummary('目录：' + state.sourceDirectoryPath + ' · 发现 ' + state.files.length + ' 个视频文件'); renderDirectoryTools(); renderQueue(); $('#upload-message').textContent = `发现 ${state.files.length} 个视频文件，其中 ${state.files.filter(file => file.available).length} 个可处理`; } catch (error) { setDirectorySummary('扫描失败：' + error.message, true); $('#upload-message').textContent = `扫描失败：${error.message}`; } finally { $('#scan-directory').disabled = false; } }
+    async function startImport() { const valid = state.files.filter(file => file.available && file.selected !== false); if (!valid.length) { $('#upload-message').textContent = state.files.some(file => file.available) ? '请先选择要处理的文件' : '请先检查文件可用性'; return; } $('#start-import').disabled = true; $('#upload-message').textContent = `正在提交 ${valid.length} 个任务…`; try { let data; try { data = await submitAcquisitionBatch(valid.map(file => ({ local_path: file.path, title: valid.length === 1 ? $('#import-title').value.trim() : '', type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#import-mode').value === 'fast' }))); } catch (error) { $('#upload-message').textContent = `提交失败：${error.message}`; return; } const failures = data.failures || []; for (const failure of failures) { const file = valid[failure.index]; if (file) { file.status = 'invalid'; file.note = failure.error; } } renderQueue(); const created = data.tasks?.length || 0; $('#upload-message').textContent = `已提交 ${created} 个任务${failures.length ? `，${failures.length} 个提交失败` : ''}，任务会排队处理，可在右下角查看进度`; if (created) { await refresh(); setTimeout(() => closeDialog($('#upload-dialog')), 350); } } finally { $('#start-import').disabled = false; } }
 
     function renderLibrary() { const root = $('#library-list'); root.replaceChildren(); if (!state.media.length) { root.append(emptyState('还没有已处理文件', '在上传窗口添加第一个视频')); $('#manage-detail').replaceChildren(emptyState('选择一个视频', '查看已提取的关键帧')); return; } for (const media of state.media) { const item = document.createElement('button'); item.className = `library-item ${state.selectedMedia === media.media_id ? 'active' : ''}`; item.dataset.mediaId = media.media_id; const title = document.createElement('div'); title.className = 'library-item-title'; title.textContent = media.title || '未命名视频'; const meta = document.createElement('div'); meta.className = 'library-item-meta'; meta.textContent = `${media.scenes?.length || media.scene_count || 0} 个关键帧 · ${formatSeconds(media.duration)}`; item.append(title, meta); root.append(item); } if (!state.selectedMedia || !state.media.some(media => media.media_id === state.selectedMedia)) state.selectedMedia = state.media[0].media_id; renderManageDetail(state.media.find(media => media.media_id === state.selectedMedia)); }
     function renderManageDetail(media) { const root = $('#manage-detail'); root.replaceChildren(); if (!media) { root.append(emptyState('选择一个视频', '查看已提取的关键帧')); return; } const head = document.createElement('div'); head.className = 'detail-head'; const info = document.createElement('div'); const title = document.createElement('h3'); title.textContent = media.title || '未命名视频'; const path = document.createElement('div'); path.className = 'detail-path'; const isRemote = media.metadata?.source === 'aliyun_drive'; const remoteName = media.metadata?.remote_name || media.title || '云盘视频'; path.title = media.metadata?.local_path || remoteName; path.textContent = media.metadata?.local_path || (isRemote ? `阿里云盘 · ${remoteName}` : '本地文件'); const stats = document.createElement('div'); stats.className = 'detail-stats'; stats.textContent = `${media.scenes?.length || 0} 个关键帧 · ${formatSeconds(media.duration)} · ${media.metadata?.format || 'video'}`; info.append(title, path, stats); const remove = document.createElement('button'); remove.className = 'danger-button'; remove.textContent = '删除整文件'; remove.dataset.deleteMedia = media.media_id; head.append(info, remove); root.append(head); const frames = document.createElement('div'); frames.className = 'frame-grid'; for (const scene of (media.scenes || [])) { const card = document.createElement('article'); card.className = 'frame-card'; if (scene.preview) { const image = document.createElement('img'); image.src = scene.preview; image.alt = `${media.title} ${formatSeconds(scene.start)}`; image.loading = 'lazy'; card.append(image); } else { const placeholder = document.createElement('div'); placeholder.className = 'placeholder'; card.append(placeholder); } const body = document.createElement('div'); body.className = 'frame-card-body'; const time = document.createElement('div'); time.className = 'frame-time'; time.textContent = `${formatSeconds(scene.start)} – ${formatSeconds(scene.end)}`; const id = document.createElement('div'); id.className = 'frame-id'; id.textContent = `scene ${scene.scene_id || 'unknown'}`; const deleteButton = document.createElement('button'); deleteButton.className = 'danger-button'; deleteButton.textContent = '删除关键帧与向量'; deleteButton.dataset.deleteScene = scene.scene_id; deleteButton.dataset.mediaId = media.media_id; if (!scene.scene_id) deleteButton.disabled = true; body.append(time, id, deleteButton); card.append(body); frames.append(card); } if (!media.scenes?.length) frames.append(emptyState('暂无关键帧', '这个媒体的场景索引可能已被全部删除')); root.append(frames); }
@@ -363,14 +565,468 @@
     async function deleteMedia(mediaId) { if (!confirm('删除整个文件的索引、关键帧和对应向量？原视频不会被删除。')) return; try { await requestJSON(`/v1/media/${escapePath(mediaId)}`, { method: 'DELETE' }); state.selectedMedia = null; await refresh(); renderLibrary(); } catch (error) { alert(`删除失败：${error.message}`); } }
 
     $('#search-form').addEventListener('submit', (event) => { event.preventDefault(); search(); }); document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => { state.mode = button.dataset.mode; localStorage.setItem('framefind-mode', state.mode); document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button)); if ($('#query').value.trim()) search(); })); document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item.dataset.mode === state.mode));
-    $('#task-toggle').addEventListener('click', () => { state.taskExpanded = !state.taskExpanded; $('#task-list').hidden = !state.taskExpanded; $('#task-toggle').textContent = state.taskExpanded ? '⌄' : '⌃'; }); $('#task-list').addEventListener('click', async (event) => { const button = event.target.closest('[data-stop-task]'); if (!button) return; button.disabled = true; try { await requestJSON(`/v1/acquisitions/${escapePath(button.dataset.stopTask)}`, { method: 'DELETE' }); await refresh(); } catch (error) { alert(`停止失败：${error.message}`); button.disabled = false; } });
+    async function stopSelectedTasks() {
+      const ids = state.tasks.filter(task => state.selectedTasks.has(task.id) && !terminal(task)).map(task => task.id);
+      if (!ids.length) return;
+      const button = $('#task-stop-selected');
+      button.disabled = true;
+      try {
+        const data = await requestJSON('/v1/acquisitions/batch/stop', jsonOptions({ task_ids: ids }));
+        await refresh();
+        if (data.failures?.length) alert('已停止 ' + (data.stopped?.length || 0) + ' 个任务，另有 ' + data.failures.length + ' 个任务未停止。');
+      } catch (error) {
+        alert('批量停止失败：' + error.message);
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    }
+
+    async function removeSelectedTasks() {
+      const ids = state.tasks.filter(task => state.selectedTasks.has(task.id) && terminal(task)).map(task => task.id);
+      if (!ids.length) return;
+      if (!confirm('删除选中的 ' + ids.length + ' 条已结束任务记录？不会删除视频、关键帧或向量。')) return;
+      const button = $('#task-remove-selected');
+      button.disabled = true;
+      try {
+        const data = await requestJSON('/v1/acquisitions/batch/delete', jsonOptions({ task_ids: ids }));
+        await refresh();
+        if (data.failures?.length) alert('已删除 ' + (data.removed?.length || 0) + ' 条记录，另有 ' + data.failures.length + ' 条未删除。');
+      } catch (error) {
+        alert('批量删除失败：' + error.message);
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    }
+
+    $('#task-toggle').addEventListener('click', () => { state.taskExpanded = !state.taskExpanded; $('#task-list').hidden = !state.taskExpanded; $('#task-toggle').textContent = state.taskExpanded ? '⌄' : '⌃'; });
+    $('#task-select-toggle').addEventListener('click', () => { const allSelected = state.tasks.length > 0 && state.tasks.every(task => state.selectedTasks.has(task.id)); state.selectedTasks = allSelected ? new Set() : new Set(state.tasks.map(task => task.id)); renderTasks(state.tasks); });
+    $('#task-select-invert').addEventListener('click', () => { state.selectedTasks = new Set(state.tasks.filter(task => !state.selectedTasks.has(task.id)).map(task => task.id)); renderTasks(state.tasks); });
+    $('#task-stop-selected').addEventListener('click', () => { void stopSelectedTasks(); });
+    $('#task-remove-selected').addEventListener('click', () => { void removeSelectedTasks(); });
+    $('#task-clear').addEventListener('click', async () => { if (!confirm('清除所有已完成、失败和已停止的任务记录？不会删除视频、关键帧或向量。')) return; const button = $('#task-clear'); button.disabled = true; try { const data = await requestJSON('/v1/acquisitions/clear', jsonOptions({ states: ['completed', 'failed', 'canceled'] })); $('#task-clear').textContent = `已清除 ${data.removed ?? 0} 条`; state.selectedTasks.clear(); setTimeout(() => { const node = $('#task-clear'); if (node) node.textContent = '清理终态'; }, 2000); await refresh(); } catch (error) { alert(`清除失败：${error.message}`); } finally { button.disabled = false; } });
+    $('#task-list').addEventListener('change', event => { const checkbox = event.target.closest('[data-task-checkbox]'); if (!checkbox) return; if (checkbox.checked) state.selectedTasks.add(checkbox.dataset.taskCheckbox); else state.selectedTasks.delete(checkbox.dataset.taskCheckbox); renderTasks(state.tasks); });
+    $('#task-list').addEventListener('click', async (event) => { const removeButton = event.target.closest('[data-remove-task]'); if (removeButton) { removeButton.disabled = true; try { await requestJSON(`/v1/acquisitions/${escapePath(removeButton.dataset.removeTask)}`, { method: 'DELETE' }); await refresh(); } catch (error) { alert(`清除失败：${error.message}`); removeButton.disabled = false; } return; } const button = event.target.closest('[data-stop-task]'); if (!button) return; button.disabled = true; try { await requestJSON(`/v1/acquisitions/${escapePath(button.dataset.stopTask)}`, { method: 'DELETE' }); await refresh(); } catch (error) { alert(`停止失败：${error.message}`); button.disabled = false; } });
     const openDialog = (dialog) => { if (!dialog) return; if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', ''); };
     const closeDialog = (dialog) => { if (!dialog) return; if (typeof dialog.close === 'function' && dialog.open) dialog.close(); else dialog.removeAttribute('open'); };
     $('#alipan-trigger').addEventListener('click', async () => { openDialog($('#alipan-dialog')); const status = await refreshAlipanStatus(); if (status?.pending && restoreAlipanSession(status)) { $('#alipan-login-message').textContent = '已恢复扫码会话，正在查询登录状态…'; void pollAlipanLogin(); } }); $('#alipan-start').addEventListener('click', startAlipanLogin); $('#alipan-restart').addEventListener('click', startAlipanLogin); $('#alipan-complete').addEventListener('click', completeAlipanLogin); $('#alipan-logout').addEventListener('click', async () => { if (!confirm('退出当前阿里云盘账户？')) return; try { stopAlipanPolling(); clearAlipanSession(); await requestJSON('/v1/connectors/alipan/logout', { method: 'POST' }); state.alipanSession = ''; state.alipanMode = ''; $('#alipan-login-panel').hidden = true; await refreshAlipanStatus(); } catch (error) { alert(`退出失败：${error.message}`); } }); $('#upload-trigger').addEventListener('click', () => openDialog($('#upload-dialog'))); $('#manage-trigger').addEventListener('click', async () => { openDialog($('#manage-dialog')); await refresh(); renderLibrary(); }); document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); closeDialog(button.closest('dialog') || document.getElementById(button.dataset.close)); })); for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) closeDialog(dialog); });
-    $('#choose-files').addEventListener('click', () => $('#file-picker').click()); $('#choose-directory').addEventListener('click', () => $('#directory-picker').click()); $('#file-picker').addEventListener('change', event => addPickedFiles(event.target.files)); $('#directory-picker').addEventListener('change', event => addPickedFiles(event.target.files)); const dropzone = $('#dropzone'); ['dragenter', 'dragover'].forEach(name => dropzone.addEventListener(name, event => { event.preventDefault(); dropzone.classList.add('dragging'); })); ['dragleave', 'drop'].forEach(name => dropzone.addEventListener(name, event => { event.preventDefault(); dropzone.classList.remove('dragging'); })); dropzone.addEventListener('drop', event => addPickedFiles(event.dataTransfer.files)); $('#scan-directory').addEventListener('click', scanDirectory); $('#validate-files').addEventListener('click', validateFiles); $('#start-import').addEventListener('click', startImport); $('#file-queue').addEventListener('click', event => { const button = event.target.closest('[data-remove-file]'); if (!button) return; const key = button.dataset.removeFile; state.files = state.files.filter(file => (file.path || file.name) !== key); renderQueue(); }); $('#library-list').addEventListener('click', event => { const item = event.target.closest('[data-media-id]'); if (!item) return; state.selectedMedia = item.dataset.mediaId; renderLibrary(); }); $('#manage-detail').addEventListener('click', event => { const sceneButton = event.target.closest('[data-delete-scene]'); if (sceneButton) deleteScene(sceneButton.dataset.mediaId, sceneButton.dataset.deleteScene); const mediaButton = event.target.closest('[data-delete-media]'); if (mediaButton) deleteMedia(mediaButton.dataset.deleteMedia); });
+    $('#inspect-source').addEventListener('click', inspectSourcePath); $('#source-path-input').addEventListener('keydown', event => { if (event.key !== 'Enter') return; event.preventDefault(); void inspectSourcePath(); }); $('#scan-directory').addEventListener('click', scanDirectory); $('#validate-files').addEventListener('click', validateFiles); $('#start-import').addEventListener('click', startImport); $('#file-queue').addEventListener('click', event => { const button = event.target.closest('[data-remove-file]'); if (!button) return; const key = button.dataset.removeFile; state.files = state.files.filter(file => (file.path || file.name) !== key); renderQueue(); }); $('#library-list').addEventListener('click', event => { const item = event.target.closest('[data-media-id]'); if (!item) return; state.selectedMedia = item.dataset.mediaId; renderLibrary(); }); $('#manage-detail').addEventListener('click', event => { const sceneButton = event.target.closest('[data-delete-scene]'); if (sceneButton) deleteScene(sceneButton.dataset.mediaId, sceneButton.dataset.deleteScene); const mediaButton = event.target.closest('[data-delete-media]'); if (mediaButton) deleteMedia(mediaButton.dataset.deleteMedia); });
+    $('#file-queue').addEventListener('click', event => { if (!event.target.closest('[data-remove-file]') || state.files.length) return; state.sourceKind = ''; state.sourceDirectoryPath = ''; state.sourceDirectoryName = ''; updateSourceSummary('尚未添加文件或目录', false); renderDirectoryTools(); });
     $('#alipan-drive').addEventListener('change', event => { state.alipanDrive = event.target.value; state.alipanParent = 'root'; state.alipanPath = []; state.alipanFiles = []; state.alipanMarker = ''; state.alipanLoadedDrive = ''; state.alipanLoadedParent = ''; state.alipanSelected.clear(); $('#alipan-breadcrumb').textContent = '根目录'; void loadAlipanFiles(); }); $('#alipan-back').addEventListener('click', leaveAlipanFolder); $('#alipan-files-refresh').addEventListener('click', () => { state.alipanLoadedDrive = ''; state.alipanLoadedParent = ''; state.alipanMarker = ''; void loadAlipanFiles(); }); $('#alipan-select-all').addEventListener('click', () => { const videos = state.alipanFiles.filter(file => String(file.type || '').toLowerCase() !== 'folder' && isAlipanVideo(file)); const allSelected = videos.length > 0 && videos.every(file => state.alipanSelected.has(file.file_id)); for (const file of videos) { if (allSelected) state.alipanSelected.delete(file.file_id); else state.alipanSelected.set(file.file_id, file); } renderAlipanFiles(); }); $('#alipan-process-selected').addEventListener('click', () => createAlipanTasks([...state.alipanSelected.values()])); $('#alipan-process-folder').addEventListener('click', () => { if (state.alipanFolderScan) state.alipanFolderScan.abort(); else void processAlipanFolder(state.alipanParent, state.alipanPath.at(-1)?.name || '当前目录'); }); $('#alipan-file-list').addEventListener('click', event => { const folderButton = event.target.closest('[data-alipan-folder]'); if (folderButton) { const folder = state.alipanFiles.find(file => file.file_id === folderButton.dataset.alipanFolder); if (folder) enterAlipanFolder(folder); return; } const processFolderButton = event.target.closest('[data-alipan-process-folder]'); if (processFolderButton) { void processAlipanFolder(processFolderButton.dataset.alipanProcessFolder, processFolderButton.dataset.alipanFolderName || '目录'); return; } const more = event.target.closest('[data-alipan-load-more]'); if (more) { void loadAlipanFiles(true); } }); $('#alipan-file-list').addEventListener('change', event => { const checkbox = event.target.closest('[data-alipan-file-checkbox]'); if (!checkbox) return; const file = state.alipanFiles.find(item => item.file_id === checkbox.dataset.alipanFileCheckbox); if (!file) return; if (checkbox.checked) state.alipanSelected.set(file.file_id, file); else state.alipanSelected.delete(file.file_id); renderAlipanFiles(); });
     const savedMinScore = localStorage.getItem('framefind-min-score'); const savedLimit = localStorage.getItem('framefind-limit'); if (savedMinScore !== null) $('#min-score').value = savedMinScore; if (savedLimit !== null) $('#result-limit').value = savedLimit; $('#min-score-value').textContent = `> ${Number($('#min-score').value).toFixed(2)}`; $('#min-score').addEventListener('input', () => { $('#min-score-value').textContent = `> ${Number($('#min-score').value).toFixed(2)}`; localStorage.setItem('framefind-min-score', $('#min-score').value); }); $('#result-limit').addEventListener('change', () => localStorage.setItem('framefind-limit', $('#result-limit').value));
     refresh(); setInterval(refresh, 2000);
+    // These small UI overrides keep the local queue actionable: every row can
+    // be excluded from submission without losing it, and can be removed alone.
+    function renderQueue() {
+      const root = $('#file-queue');
+      const selected = state.files.filter(file => file.selected !== false).length;
+      $('#queue-count').textContent = state.files.length + ' 个 · 已选 ' + selected;
+      const toggle = $('#file-select-toggle');
+      toggle.textContent = state.files.length && selected === state.files.length ? '取消全选' : '全选';
+      toggle.disabled = !state.files.length;
+      $('#file-select-invert').disabled = !state.files.length;
+      $('#file-selection-clear').disabled = selected === 0;
+      root.replaceChildren();
+      if (!state.files.length) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '还没有文件\n添加文件或扫描目录后会显示可用性';
+        root.append(empty);
+        return;
+      }
+      for (const file of state.files) {
+        const key = file.path || file.name;
+        const row = document.createElement('div');
+        row.className = 'file-row ' + (file.selected === false ? 'is-unselected' : '');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = file.selected !== false;
+        checkbox.dataset.fileCheckbox = key;
+        checkbox.setAttribute('aria-label', '选择 ' + file.name);
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        name.textContent = file.name;
+        const path = document.createElement('div');
+        path.className = 'file-path';
+        path.textContent = file.path || file.note || '需要粘贴服务端绝对路径';
+        info.append(name, path);
+        const status = document.createElement('span');
+        status.className = 'file-status ' + (file.available ? 'ok' : file.status === 'invalid' ? 'bad' : '');
+        status.textContent = file.available ? '可用' + (file.size ? ' · ' + formatBytes(file.size) : '') : file.status === 'invalid' ? '不可用' : '待检查';
+        const remove = document.createElement('button');
+        remove.className = 'remove-file';
+        remove.type = 'button';
+        remove.textContent = '移除';
+        remove.dataset.removeFile = key;
+        remove.setAttribute('aria-label', '移除 ' + file.name);
+        row.append(checkbox, info, status, remove);
+        root.append(row);
+      }
+    }
+
+    async function rebuildMediaEmbeddings(mediaID, button) {
+      const select = document.querySelector('[data-rebuild-profile="' + mediaID + '"]');
+      const profile = select?.value || 'original';
+      button.disabled = true;
+      const oldText = button.textContent;
+      button.textContent = '正在提交…';
+      try {
+        const task = await requestJSON('/v1/media/' + escapePath(mediaID) + '/embeddings/rebuild', jsonOptions({ profile }));
+        state.tasks = [task, ...state.tasks.filter(item => item.id !== task.id)];
+        renderTasks(state.tasks);
+        button.textContent = '已加入队列';
+        setTimeout(() => { if (button.isConnected) button.textContent = oldText; }, 1800);
+      } catch (error) {
+        button.textContent = oldText;
+        alert('提交向量重建失败：' + error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function renderManageDetail(media) {
+      const root = $('#manage-detail');
+      root.replaceChildren();
+      if (!media) {
+        root.append(emptyState('选择一个视频', '查看已提取的关键帧'));
+        return;
+      }
+      const head = document.createElement('div');
+      head.className = 'detail-head';
+      const info = document.createElement('div');
+      const title = document.createElement('h3');
+      title.textContent = media.title || '未命名视频';
+      const path = document.createElement('div');
+      path.className = 'detail-path';
+      const isRemote = media.metadata?.source === 'aliyun_drive';
+      const remoteName = media.metadata?.remote_name || media.title || '云盘视频';
+      path.title = media.metadata?.local_path || remoteName;
+      path.textContent = media.metadata?.local_path || (isRemote ? '阿里云盘 · ' + remoteName : '本地文件');
+      const stats = document.createElement('div');
+      stats.className = 'detail-stats';
+      stats.textContent = (media.scenes?.length || 0) + ' 个关键帧 · ' + formatSeconds(media.duration) + ' · ' + (media.metadata?.format || 'video');
+      const profile = media.metadata?.embedding_profile || '未记录';
+      const modality = media.metadata?.embedding_modality || '未记录';
+      const profileNote = document.createElement('div');
+      profileNote.className = 'embedding-profile-note';
+      profileNote.textContent = '当前向量：' + modality + ' · ' + profile;
+      info.append(title, path, stats, profileNote);
+      head.append(info);
+      root.append(head);
+      const frames = document.createElement('div');
+      frames.className = 'frame-grid';
+      for (const scene of (media.scenes || [])) {
+        const card = document.createElement('article');
+        card.className = 'frame-card';
+        if (scene.preview) {
+          const image = document.createElement('img');
+          image.src = scene.preview;
+          image.alt = (media.title || '视频') + ' ' + formatSeconds(scene.start);
+          image.loading = 'lazy';
+          card.append(image);
+        } else {
+          const placeholder = document.createElement('div');
+          placeholder.className = 'placeholder';
+          card.append(placeholder);
+        }
+        const body = document.createElement('div');
+        body.className = 'frame-card-body';
+        const time = document.createElement('div');
+        time.className = 'frame-time';
+        time.textContent = formatSeconds(scene.start) + ' – ' + formatSeconds(scene.end);
+        const id = document.createElement('div');
+        id.className = 'frame-id';
+        id.textContent = 'scene ' + (scene.scene_id || 'unknown');
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'danger-button';
+        deleteButton.type = 'button';
+        deleteButton.textContent = '删除关键帧与向量';
+        deleteButton.dataset.deleteScene = scene.scene_id;
+        deleteButton.dataset.mediaId = media.media_id;
+        if (!scene.scene_id) deleteButton.disabled = true;
+        body.append(time, id, deleteButton);
+        card.append(body);
+        frames.append(card);
+      }
+      if (!media.scenes?.length) frames.append(emptyState('暂无关键帧', '这个媒体的场景索引可能已被全部删除'));
+      root.append(frames);
+    }
+
+    $('#file-queue').addEventListener('change', event => {
+      const checkbox = event.target.closest('[data-file-checkbox]');
+      if (!checkbox) return;
+      const file = state.files.find(item => (item.path || item.name) === checkbox.dataset.fileCheckbox);
+      if (file) { file.selected = checkbox.checked; renderQueue(); }
+    });
+    $('#file-select-toggle').addEventListener('click', () => {
+      const allSelected = state.files.length > 0 && state.files.every(file => file.selected !== false);
+      for (const file of state.files) file.selected = !allSelected;
+      renderQueue();
+    });
+    $('#file-select-invert').addEventListener('click', () => {
+      if (!state.files.length) return;
+      for (const file of state.files) file.selected = file.selected === false;
+      renderQueue();
+    });
+    $('#file-selection-clear').addEventListener('click', () => {
+      if (!state.files.length) return;
+      for (const file of state.files) file.selected = false;
+      renderQueue();
+    });
+    $('#manage-detail').addEventListener('click', event => {
+      const rebuild = event.target.closest('[data-rebuild-media]');
+      if (rebuild) { void rebuildMediaEmbeddings(rebuild.dataset.rebuildMedia, rebuild); return; }
+    });
+    function renderLibrary() {
+      const root = $('#library-list');
+      const toolbar = $('#library-toolbar');
+      const selectedSet = state.rebuildSelected || new Set();
+      state.rebuildSelected = selectedSet;
+      root.replaceChildren();
+      toolbar.replaceChildren();
+      if (!state.media.length) {
+        toolbar.hidden = true;
+        root.append(emptyState('还没有已处理文件', '在上传窗口添加第一个视频'));
+        $('#manage-detail').replaceChildren(emptyState('选择一个视频', '查看已提取的关键帧'));
+        return;
+      }
+      toolbar.hidden = false;
+      for (const mediaID of selectedSet) {
+        if (!state.media.some(media => media.media_id === mediaID)) selectedSet.delete(mediaID);
+      }
+      const selectedCount = state.media.filter(media => selectedSet.has(media.media_id)).length;
+      const selectionCount = document.createElement('span');
+      selectionCount.className = 'library-selection-count';
+      selectionCount.textContent = '已选择 ' + selectedCount + ' / ' + state.media.length + ' 个视频';
+      const selectAll = document.createElement('button');
+      selectAll.type = 'button';
+      selectAll.className = 'secondary-button';
+      selectAll.textContent = state.media.every(media => selectedSet.has(media.media_id)) ? '取消全选' : '全选';
+      selectAll.dataset.manageSelectAll = '1';
+      const profile = document.createElement('select');
+      profile.id = 'manage-rebuild-profile';
+      profile.setAttribute('aria-label', '批量向量图像处理方式');
+      profile.innerHTML = '<option value="original">原样（模型默认）</option><option value="compressed">压缩（65,536–98,304 像素）</option>';
+      profile.value = state.rebuildProfile || 'original';
+      const rebuild = document.createElement('button');
+      rebuild.type = 'button';
+      rebuild.className = 'primary-button';
+      rebuild.textContent = selectedCount === 1 ? '重新构建向量' : '批量重建向量';
+      rebuild.dataset.rebuildSelected = '1';
+      rebuild.disabled = selectedCount === 0;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'danger-button';
+      remove.textContent = selectedCount === 1 ? '删除整文件' : '批量删除';
+      remove.dataset.deleteSelected = '1';
+      remove.disabled = selectedCount === 0;
+      toolbar.append(selectionCount, selectAll, profile, rebuild, remove);
+      for (const media of state.media) {
+        const item = document.createElement('div');
+        item.className = 'library-item ' + (state.selectedMedia === media.media_id ? 'active' : '');
+        item.dataset.mediaId = media.media_id;
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = selectedSet.has(media.media_id);
+        checkbox.dataset.rebuildMediaCheckbox = media.media_id;
+        checkbox.setAttribute('aria-label', '选择重建 ' + (media.title || '未命名视频'));
+        checkbox.addEventListener('click', event => event.stopPropagation());
+        const content = document.createElement('div');
+        content.className = 'library-item-content';
+        const title = document.createElement('div');
+        title.className = 'library-item-title';
+        title.textContent = media.title || '未命名视频';
+        const meta = document.createElement('div');
+        meta.className = 'library-item-meta';
+        meta.textContent = (media.scenes?.length || media.scene_count || 0) + ' 个关键帧 · ' + formatSeconds(media.duration);
+        content.append(title, meta);
+        item.append(checkbox, content);
+        root.append(item);
+      }
+      if (!state.selectedMedia || !state.media.some(media => media.media_id === state.selectedMedia)) state.selectedMedia = state.media[0].media_id;
+      renderManageDetail(state.media.find(media => media.media_id === state.selectedMedia));
+    }
+
+    async function rebuildSelectedMedia() {
+      const selectedSet = state.rebuildSelected || new Set();
+      const ids = state.media.filter(media => selectedSet.has(media.media_id)).map(media => media.media_id);
+      if (!ids.length) return;
+      const profile = $('#manage-rebuild-profile')?.value || 'original';
+      const button = document.querySelector('[data-rebuild-selected]');
+      if (button) { button.disabled = true; button.textContent = '正在提交…'; }
+      try {
+        const data = await requestJSON('/v1/media/embeddings/rebuild', jsonOptions({ media_ids: ids, profile }));
+        const tasks = data.tasks || [];
+        state.tasks = [...tasks, ...state.tasks.filter(item => !tasks.some(created => created.id === item.id))];
+        renderTasks(state.tasks);
+        state.rebuildSelected.clear();
+        renderLibrary();
+        const failed = data.failures?.length || 0;
+        if (failed) alert('已提交 ' + tasks.length + ' 个任务，另有 ' + failed + ' 个视频提交失败。');
+      } catch (error) {
+        alert('批量重建提交失败：' + error.message);
+      } finally {
+        if (button?.isConnected) {
+          button.disabled = false;
+          button.textContent = ids.length === 1 ? '重新构建向量' : '批量重建向量';
+        }
+      }
+    }
+
+    async function deleteSelectedMedia() {
+      const selectedSet = state.rebuildSelected || new Set();
+      const ids = state.media.filter(media => selectedSet.has(media.media_id)).map(media => media.media_id);
+      if (!ids.length) return;
+      const confirmation = ids.length === 1
+        ? '删除整个文件的索引、关键帧和对应向量？原视频不会被删除。'
+        : '删除选中的 ' + ids.length + ' 个文件的索引、关键帧和对应向量？原视频不会被删除。';
+      if (!confirm(confirmation)) return;
+      const button = document.querySelector('[data-delete-selected]');
+      if (button) { button.disabled = true; button.textContent = '正在删除…'; }
+      try {
+        const data = await requestJSON('/v1/media/batch/delete', jsonOptions({ media_ids: ids }));
+        for (const mediaID of (data.deleted || [])) selectedSet.delete(mediaID);
+        if (state.selectedMedia && (data.deleted || []).includes(state.selectedMedia)) state.selectedMedia = null;
+        await refresh();
+        renderLibrary();
+        const failed = data.failures?.length || 0;
+        if (failed) alert('已删除 ' + (data.deleted?.length || 0) + ' 个文件，另有 ' + failed + ' 个文件删除失败。');
+      } catch (error) {
+        alert('批量删除失败：' + error.message);
+      } finally {
+        if (button?.isConnected) {
+          button.disabled = false;
+          button.textContent = ids.length === 1 ? '删除整文件' : '批量删除';
+        }
+      }
+    }
+
+    $('#library-list').addEventListener('change', event => {
+      const checkbox = event.target.closest('[data-rebuild-media-checkbox]');
+      if (!checkbox) return;
+      if (!state.rebuildSelected) state.rebuildSelected = new Set();
+      if (checkbox.checked) state.rebuildSelected.add(checkbox.dataset.rebuildMediaCheckbox);
+      else state.rebuildSelected.delete(checkbox.dataset.rebuildMediaCheckbox);
+      renderLibrary();
+    });
+    $('#library-toolbar').addEventListener('change', event => {
+      const profile = event.target.closest('#manage-rebuild-profile');
+      if (profile) state.rebuildProfile = profile.value;
+    });
+    $('#library-toolbar').addEventListener('click', event => {
+      const selectAll = event.target.closest('[data-manage-select-all]');
+      if (selectAll) {
+        if (!state.rebuildSelected) state.rebuildSelected = new Set();
+        const allSelected = state.media.length > 0 && state.media.every(media => state.rebuildSelected.has(media.media_id));
+        for (const media of state.media) {
+          if (allSelected) state.rebuildSelected.delete(media.media_id);
+          else state.rebuildSelected.add(media.media_id);
+        }
+        renderLibrary();
+        return;
+      }
+      const rebuild = event.target.closest('[data-rebuild-selected]');
+      if (rebuild) { void rebuildSelectedMedia(); return; }
+      const remove = event.target.closest('[data-delete-selected]');
+      if (remove) { void deleteSelectedMedia(); return; }
+    });
+
+    // Use a real outline icon for folders instead of the ambiguous text glyph.
+    function renderAlipanFiles() {
+      const root = $('#alipan-file-list');
+      root.replaceChildren();
+      const folders = state.alipanFiles.filter(file => String(file.type || '').toLowerCase() === 'folder');
+      const videos = state.alipanFiles.filter(file => String(file.type || '').toLowerCase() !== 'folder' && isAlipanVideo(file));
+      const otherFiles = state.alipanFiles.filter(file => String(file.type || '').toLowerCase() !== 'folder' && !isAlipanVideo(file));
+      if (!state.alipanFiles.length && !state.alipanLoading) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '这个目录没有文件';
+        root.append(empty);
+      }
+      for (const file of [...folders, ...videos, ...otherFiles]) {
+        const isFolder = String(file.type || '').toLowerCase() === 'folder';
+        const row = document.createElement('div');
+        row.className = 'file-row alipan-file-row ' + (isFolder ? 'folder' : '');
+        if (isFolder) {
+          const kind = document.createElement('span');
+          kind.className = 'file-kind';
+          kind.setAttribute('aria-hidden', 'true');
+          kind.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4.2l2 2H18.5a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"></path></svg>';
+          row.append(kind);
+        } else {
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = state.alipanSelected.has(file.file_id);
+          checkbox.disabled = !isAlipanVideo(file);
+          checkbox.dataset.alipanFileCheckbox = file.file_id;
+          row.append(checkbox);
+        }
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        name.textContent = file.name || file.file_id;
+        const path = document.createElement('div');
+        path.className = 'file-path';
+        path.textContent = isFolder ? '目录' : (file.file_extension || '视频') + (file.size ? ' · ' + formatBytes(file.size) : '');
+        info.append(name, path);
+        row.append(info);
+        const actions = document.createElement('div');
+        actions.className = 'alipan-file-actions';
+        if (isFolder) {
+          const open = document.createElement('button');
+          open.type = 'button';
+          open.textContent = '打开';
+          open.dataset.alipanFolder = file.file_id;
+          const process = document.createElement('button');
+          process.type = 'button';
+          process.textContent = '处理目录';
+          process.dataset.alipanProcessFolder = file.file_id;
+          process.dataset.alipanFolderName = file.name || '目录';
+          actions.append(open, process);
+        } else if (!isAlipanVideo(file)) {
+          const label = document.createElement('span');
+          label.className = 'file-status';
+          label.textContent = '非视频';
+          actions.append(label);
+        }
+        row.append(actions);
+        root.append(row);
+      }
+      if (state.alipanMarker) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'secondary-button';
+        more.style.cssText = 'width:calc(100% - 20px); margin:10px;';
+        more.textContent = '加载更多';
+        more.dataset.alipanLoadMore = '1';
+        root.append(more);
+      }
+      $('#alipan-selection-count').textContent = '已选择 ' + state.alipanSelected.size + ' 个视频（当前页 ' + videos.length + ' 个）';
+    }
+    function ensureAlipanStatusActions() {
+      const root = $('#alipan-status');
+      if (!root) return;
+      let button = root.querySelector('[data-alipan-status-logout]');
+      if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'secondary-button status-logout';
+        button.textContent = '退出账户';
+        button.dataset.alipanStatusLogout = '1';
+        root.append(button);
+      }
+      button.hidden = !root.classList.contains('good');
+    }
+    const alipanStatusObserver = new MutationObserver(ensureAlipanStatusActions);
+    alipanStatusObserver.observe($('#alipan-status'), { childList: true });
+    $('#alipan-status').addEventListener('click', event => {
+      if (event.target.closest('[data-alipan-status-logout]')) $('#alipan-logout').click();
+    });
+    ensureAlipanStatusActions();
+    setInterval(() => { if ($('#alipan-dialog').open) void refreshAlipanStatus(); }, 30000);
   </script>
 </body>
 </html>

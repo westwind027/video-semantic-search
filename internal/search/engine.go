@@ -16,6 +16,8 @@ type IndexResult struct {
 	SceneCount int
 	Model      string
 	Dimension  int
+	Modality   string
+	Profile    string
 }
 
 type Engine struct {
@@ -23,10 +25,17 @@ type Engine struct {
 	embedder          embedding.Client
 	useImageEmbedding bool
 	ImageBatchSize    int
+	ImageProfile      embedding.ImageProfile
 }
 
 func NewEngine(indexStore store.IndexStore, embedder embedding.Client, useImageEmbedding bool) *Engine {
-	return &Engine{store: indexStore, embedder: embedder, useImageEmbedding: useImageEmbedding, ImageBatchSize: 32}
+	return &Engine{store: indexStore, embedder: embedder, useImageEmbedding: useImageEmbedding, ImageBatchSize: 32, ImageProfile: embedding.ImageProfileOriginal}
+}
+
+// GetMedia exposes the indexed media record to asynchronous management jobs.
+// The store still owns the actual persistence and returns a defensive copy.
+func (e *Engine) GetMedia(mediaID string) (model.Media, bool) {
+	return e.store.GetMedia(mediaID)
 }
 
 // FindMediaByFingerprint returns an indexed media item with the same content
@@ -67,15 +76,40 @@ func (e *Engine) Index(ctx context.Context, media model.Media) (IndexResult, err
 // they finish. Keeping the batches in Go avoids one oversized HTTP request and
 // gives acquisition tasks an observable final stage.
 func (e *Engine) IndexWithProgress(ctx context.Context, media model.Media, report func(done, total int)) (IndexResult, error) {
-	return e.indexWithProgress(ctx, media, report)
+	return e.indexWithImageOptions(ctx, media, e.useImageEmbedding, embedding.ImageOptions{Profile: e.ImageProfile}, report)
 }
 
 func (e *Engine) indexWithProgress(ctx context.Context, media model.Media, report func(done, total int)) (IndexResult, error) {
+	return e.indexWithImageOptions(ctx, media, e.useImageEmbedding, embedding.ImageOptions{Profile: e.ImageProfile}, report)
+}
+
+// RebuildEmbeddings regenerates vectors for an already indexed media item
+// without parsing the source video or extracting frames again. This is the
+// intended path for comparing WeMM's native image processing with the bounded
+// compressed profile.
+func (e *Engine) RebuildEmbeddings(ctx context.Context, mediaID string, profile embedding.ImageProfile, report func(done, total int)) (IndexResult, error) {
+	if profile == "" {
+		profile = embedding.ImageProfileOriginal
+	}
+	if profile != embedding.ImageProfileOriginal && profile != embedding.ImageProfileCompressed {
+		return IndexResult{}, fmt.Errorf("unsupported image profile %q", profile)
+	}
+	media, ok := e.store.GetMedia(mediaID)
+	if !ok {
+		return IndexResult{}, fmt.Errorf("media %q not found", mediaID)
+	}
+	return e.indexWithImageOptions(ctx, media, true, embedding.ImageOptions{Profile: profile}, report)
+}
+
+func (e *Engine) indexWithImageOptions(ctx context.Context, media model.Media, useImages bool, options embedding.ImageOptions, report func(done, total int)) (IndexResult, error) {
 	if err := media.Validate(); err != nil {
 		return IndexResult{}, err
 	}
+	if options.Profile == "" {
+		options.Profile = embedding.ImageProfileOriginal
+	}
 	texts := make([]string, len(media.Scenes))
-	if !e.useImageEmbedding {
+	if !useImages {
 		for index, scene := range media.Scenes {
 			texts[index] = sceneText(media, scene)
 		}
@@ -83,18 +117,18 @@ func (e *Engine) indexWithProgress(ctx context.Context, media model.Media, repor
 	var vectors [][]float32
 	var result embedding.Result
 	var err error
-	if e.useImageEmbedding && allScenesHavePreview(media) {
+	if useImages && allScenesHavePreview(media) {
 		images := make([]string, len(media.Scenes))
 		for index, scene := range media.Scenes {
 			images[index] = previewReference(scene)
 		}
-		result, err = e.embedImagesInBatches(ctx, images, report)
+		result, err = e.embedImagesInBatchesWithOptions(ctx, images, options, report)
 		if err != nil {
 			return IndexResult{}, err
 		}
 		vectors = result.Vectors
 	} else {
-		if e.useImageEmbedding {
+		if useImages {
 			for index, scene := range media.Scenes {
 				texts[index] = sceneText(media, scene)
 			}
@@ -106,7 +140,7 @@ func (e *Engine) indexWithProgress(ctx context.Context, media model.Media, repor
 		vectors = textResult.Vectors
 		result = textResult
 	}
-	if e.useImageEmbedding && !allScenesHavePreview(media) {
+	if useImages && !allScenesHavePreview(media) {
 		imagePositions := make([]int, 0, len(media.Scenes))
 		images := make([]string, 0, len(media.Scenes))
 		for index, scene := range media.Scenes {
@@ -116,7 +150,7 @@ func (e *Engine) indexWithProgress(ctx context.Context, media model.Media, repor
 			}
 		}
 		if len(images) > 0 {
-			imageResult, imageErr := e.embedImagesInBatches(ctx, images, report)
+			imageResult, imageErr := e.embedImagesInBatchesWithOptions(ctx, images, options, report)
 			if imageErr != nil {
 				return IndexResult{}, imageErr
 			}
@@ -129,18 +163,25 @@ func (e *Engine) indexWithProgress(ctx context.Context, media model.Media, repor
 			if imageResult.Dimension != result.Dimension {
 				return IndexResult{}, fmt.Errorf("text and image embedding dimensions differ: %d vs %d", result.Dimension, imageResult.Dimension)
 			}
+			result.Modality = "mixed"
+			result.Profile = string(options.Profile)
 		}
 	}
 	if len(vectors) != len(media.Scenes) {
 		return IndexResult{}, fmt.Errorf("embedding count %d does not match scene count %d", len(vectors), len(media.Scenes))
 	}
+	media = withEmbeddingMetadata(media, result)
 	if err := e.store.UpsertMedia(media, vectors, result.Model); err != nil {
 		return IndexResult{}, err
 	}
-	return IndexResult{SceneCount: len(media.Scenes), Model: result.Model, Dimension: result.Dimension}, nil
+	return IndexResult{SceneCount: len(media.Scenes), Model: result.Model, Dimension: result.Dimension, Modality: result.Modality, Profile: result.Profile}, nil
 }
 
 func (e *Engine) embedImagesInBatches(ctx context.Context, images []string, report func(done, total int)) (embedding.Result, error) {
+	return e.embedImagesInBatchesWithOptions(ctx, images, embedding.ImageOptions{Profile: embedding.ImageProfileOriginal}, report)
+}
+
+func (e *Engine) embedImagesInBatchesWithOptions(ctx context.Context, images []string, options embedding.ImageOptions, report func(done, total int)) (embedding.Result, error) {
 	if len(images) == 0 {
 		return embedding.Result{}, fmt.Errorf("image embedding requires at least one image")
 	}
@@ -156,7 +197,7 @@ func (e *Engine) embedImagesInBatches(ctx context.Context, images []string, repo
 		if end > len(images) {
 			end = len(images)
 		}
-		result, err := e.embedder.EmbedImages(ctx, images[start:end])
+		result, err := e.embedImageBatch(ctx, images[start:end], options)
 		if err != nil {
 			return embedding.Result{}, err
 		}
@@ -174,7 +215,33 @@ func (e *Engine) embedImagesInBatches(ctx context.Context, images []string, repo
 			report(end, len(images))
 		}
 	}
-	return embedding.Result{Vectors: vectors, Model: modelName, Dimension: dimension, Modality: "image"}, nil
+	return embedding.Result{Vectors: vectors, Model: modelName, Dimension: dimension, Modality: "image", Profile: string(options.Profile)}, nil
+}
+
+func (e *Engine) embedImageBatch(ctx context.Context, images []string, options embedding.ImageOptions) (embedding.Result, error) {
+	if profiled, ok := e.embedder.(embedding.ProfiledImageClient); ok {
+		return profiled.EmbedImagesWithOptions(ctx, images, options)
+	}
+	return e.embedder.EmbedImages(ctx, images)
+}
+
+func withEmbeddingMetadata(media model.Media, result embedding.Result) model.Media {
+	copyMedia := media
+	copyMedia.Metadata = make(map[string]any, len(media.Metadata)+2)
+	for key, value := range media.Metadata {
+		copyMedia.Metadata[key] = value
+	}
+	modality := result.Modality
+	if modality == "" {
+		modality = "text"
+	}
+	copyMedia.Metadata["embedding_modality"] = modality
+	if result.Profile != "" {
+		copyMedia.Metadata["embedding_profile"] = result.Profile
+	} else {
+		delete(copyMedia.Metadata, "embedding_profile")
+	}
+	return copyMedia
 }
 
 func allScenesHavePreview(media model.Media) bool {

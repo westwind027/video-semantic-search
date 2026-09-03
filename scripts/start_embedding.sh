@@ -23,9 +23,9 @@ Environment overrides:
   EMBEDDING_PORT         7001 (default)
   EMBEDDING_DIMENSION    2048 (default; supported WeMM Matryoshka dimension)
   EMBEDDING_BATCH_SIZE   8 (default; lower to 4 or 1 if GPU memory is insufficient)
-  WEMM_MAX_IMAGE_PIXELS  98304 (default; set 0 to use the model default)
-  WEMM_MIN_IMAGE_PIXELS  65536 (default; set 0 to use the model default)
   WEMM_IMAGE_PROMPT      Represent this image. (default)
+  WEMM_COMPRESSED_MIN_IMAGE_PIXELS  65536 (compressed profile default)
+  WEMM_COMPRESSED_MAX_IMAGE_PIXELS  98304 (compressed profile default)
   PROXY_URL              http://192.168.50.199:10810 (default); none/direct disables proxy
   EMBEDDING_LOG          logs/embedding-service.log (default)
 EOF
@@ -66,17 +66,17 @@ export EMBEDDING_BACKEND="${EMBEDDING_BACKEND:-wemm}"
 export WEMM_MODEL="${WEMM_MODEL:-tencent/WeMM-Embedding-2B}"
 export EMBEDDING_DIMENSION="${EMBEDDING_DIMENSION:-2048}"
 export WEMM_IMAGE_PROMPT="${WEMM_IMAGE_PROMPT:-Represent this image.}"
+export WEMM_COMPRESSED_MIN_IMAGE_PIXELS="${WEMM_COMPRESSED_MIN_IMAGE_PIXELS:-65536}"
+export WEMM_COMPRESSED_MAX_IMAGE_PIXELS="${WEMM_COMPRESSED_MAX_IMAGE_PIXELS:-98304}"
 export EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 export EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-8}"
-export WEMM_MAX_IMAGE_PIXELS="${WEMM_MAX_IMAGE_PIXELS:-98304}"
-export WEMM_MIN_IMAGE_PIXELS="${WEMM_MIN_IMAGE_PIXELS:-65536}"
 
 echo "embedding log: $LOG_FILE"
 echo "python: $PYTHON_BIN"
 echo "backend: $EMBEDDING_BACKEND"
 echo "model: $WEMM_MODEL"
 echo "endpoint: http://${EMBEDDING_HOST:-127.0.0.1}:${EMBEDDING_PORT:-7001}"
-echo "inference: batch=$EMBEDDING_BATCH_SIZE image_pixels=${WEMM_MIN_IMAGE_PIXELS}-${WEMM_MAX_IMAGE_PIXELS}"
+echo "inference: batch=$EMBEDDING_BATCH_SIZE image_profiles=original,compressed compressed_pixels=${WEMM_COMPRESSED_MIN_IMAGE_PIXELS}-${WEMM_COMPRESSED_MAX_IMAGE_PIXELS}"
 echo "download mode: http (HF_HUB_DISABLE_XET=$HF_HUB_DISABLE_XET)"
 echo "start: $(date -Is)" | tee -a "$LOG_FILE"
 

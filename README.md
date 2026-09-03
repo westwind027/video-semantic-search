@@ -71,11 +71,13 @@ scripts/watch_wemm_download.sh --interval 10
 
 ```bash
 cd video-semantic-search
-VIDEO_FAST_MODE=true VIDEO_FAST_MAX_SCENES=32 VIDEO_FRAME_WORKERS=8 \
+VIDEO_FAST_MODE=true VIDEO_FRAME_WORKERS=8 \
   go run ./cmd/search-server
 ```
 
-页面默认勾选快速模式。以当前约 7000 秒视频为例，快速模式会限制为最多 32 个代表画面，目标是将交互式处理控制在几十秒量级；如果要完整检测每个静态切镜，取消页面勾选并使用准确模式，但耗时会随视频时长增长。
+上传弹窗直接输入 Go 服务所在机器上的文件或目录路径，不依赖浏览器文件选择器。输入 `E:\\Movies\\movie.mp4`、`E:/Movies/movie.mp4` 或 `/mnt/e/Movies/movie.mp4` 后点击“检查路径”；文件会直接加入待处理列表，目录则显示“扫描目录”和递归选项。服务端会将 Windows 路径转换为 WSL 路径，原视频不会上传或复制。
+
+页面默认勾选快速模式。采集任务由后台 worker 池顺序执行，默认同时处理 2 个任务，可用 `VIDEO_TASK_WORKERS` 调整；排队中的任务可随时取消，失败或已取消的记录可在页面上批量清理。快速模式按 `sample_interval` 均匀采样，最多 32 个画面；关键帧采样/准确模式最多 240 个画面。采样间隔越小，画面越密集、抽帧和 embedding 耗时越长。如果要完整检测每个静态切镜，取消页面勾选并使用准确模式，但耗时会随视频时长增长。
 
 右上角的云盘图标用于阿里云盘账户接入。若没有个人 OpenAPI 应用凭据，默认使用 tickstep 的扫码登录链路：服务端生成二维码并轮询登录状态，access token 只写入服务端本地文件。若你有自己的 OpenAPI 应用，也可以显式设置 `ALIYUNPAN_LOGIN_MODE=official`，使用官方 OAuth 的 `oob` 授权码流程。环境变量写在 `.env` 时，启动前先执行 `set -a; source .env; set +a`：
 
@@ -92,7 +94,7 @@ export ALIYUNPAN_REDIRECT_URI='oob'
 export ALIYUNPAN_LOGIN_MODE='tickstep'
 ```
 
-登录凭据只写入 `VIDEO_SEARCH_ALIPAN_CONFIG` 指定的本地文件（默认 `data/alipan_profiles.json`），文件权限为 `0600`，HTTP 响应和页面都不会返回 access token/refresh token。tickstep 模式依赖 `ALIYUNPAN_TICKSTEP_BROKER_URL`（默认 `https://api.tickstep.com`）；官方模式则只调用阿里云盘 OAuth 和 OpenAPI。后续云盘文件操作会复用这套账户会话。
+登录凭据只写入 `VIDEO_SEARCH_ALIPAN_CONFIG` 指定的本地文件（默认 `data/alipan_profiles.json`），文件权限为 `0600`，HTTP 响应和页面都不会返回 access token/refresh token。tickstep 模式依赖 `ALIYUNPAN_TICKSTEP_BROKER_URL`（默认 `https://api.tickstep.com`）；官方模式则只调用阿里云盘 OAuth 和 OpenAPI。服务会在 access token 到期前自动续期：官方模式使用 refresh token，tickstep 模式使用登录 ticket；后台每分钟主动检查，实际调用云盘 API 时也会再次检查。后续云盘文件操作会复用这套账户会话。
 
 导入 JSONL 数据可以直接使用 Go ingest command：
 
@@ -102,6 +104,24 @@ go run ./cmd/ingest -file data/sample.jsonl
 
 也可以调用 `POST /v1/media` 单条写入一个 JSON object。
 
+已处理视频可以在管理弹窗中选择 `原样（模型默认）` 或 `压缩`，点击“重新构建向量”。这是异步任务，只重新读取现有关键帧，不重新解析视频、不重新抽帧；任务进度会出现在右下角任务栏。服务端也支持：
+
+```bash
+curl -s http://127.0.0.1:8000/v1/media/<media_id>/embeddings/rebuild \
+  -H 'content-type: application/json' \
+  -d '{"profile":"compressed"}'
+```
+
+管理弹窗顶部工具栏提供向量策略、全选/取消全选、重建和删除操作；勾选一个视频时按钮显示“重新构建向量”“删除整文件”，勾选多个时显示“批量重建向量”“批量删除”。批量重建接口为 `POST /v1/media/embeddings/rebuild`，批量删除接口为 `POST /v1/media/batch/delete`，二者都按 `media_ids` 逐项返回结果；删除会同步移除索引、关键帧和对应向量，但不会删除原视频。
+
+重建前可用现有关键帧评估两种图片预处理的向量漂移；脚本只读数据，不修改索引：
+
+```bash
+scripts/compare_wemm_profiles.py --endpoint http://127.0.0.1:7001 --index data/index.json --sample-size 32
+```
+
+脚本默认要求所有样本的余弦相似度至少达到 `0.995` 才建议压缩，可用 `--threshold` 调整。Go 服务的默认图片 profile 是 `original`，也可用 `VIDEO_IMAGE_PROFILE=compressed` 配置新任务默认使用压缩 profile；已有视频不会自动改变。
+
 搜索：
 
 ```bash
@@ -110,9 +130,11 @@ curl -s http://127.0.0.1:8000/v1/search \
   -d '{"query":"夕阳下两个人骑摩托车","limit":16,"min_score":0.3,"mode":"media"}'
 ```
 
-然后打开 <http://127.0.0.1:8000>。主页面只保留搜索与结果区域；右上角上传图标打开批量解析弹窗，管理图标打开已处理文件和关键帧管理。页面的本地视频输入是 Go 服务端路径，不会通过浏览器上传或复制原视频；处理时只在帧目录生成 JPEG 代表帧。普通浏览器出于安全限制不一定会暴露拖拽文件的绝对路径，因此可直接在弹窗中粘贴路径或扫描目录。
+然后打开 <http://127.0.0.1:8000>。主页面只保留搜索与结果区域；右上角上传图标打开批量解析弹窗，弹窗采用左侧路径来源、右侧待处理清单、底部提交栏布局，支持全选/反选、清除所选和单条移除。文件路径检查通过后直接进入待处理清单；目录路径检查通过后，点击“扫描目录”才会把发现的视频加入清单，递归扫描选项位于其下方。管理图标打开已处理文件和关键帧管理。页面的本地视频输入是 Go 服务端路径，不会通过浏览器上传或复制原视频；处理时只在帧目录生成 JPEG 代表帧。API 接收到 `E:\\Movies\\movie.mp4` 或 `E:/Movies/movie.mp4` 时会自动转换为 WSL 的 `/mnt/e/Movies/movie.mp4` 再检查和处理。
 
 默认配置：
+
+图片向量重建支持 `VIDEO_IMAGE_PROFILE=original|compressed`；压缩 profile 的像素范围由 `WEMM_COMPRESSED_MIN_IMAGE_PIXELS` 和 `WEMM_COMPRESSED_MAX_IMAGE_PIXELS` 控制。Go 服务默认使用 `original`，已处理视频可以在管理弹窗中单独或批量选择 profile 重建。
 
 - Go API：`127.0.0.1:8000`
 - Python embedding：`127.0.0.1:7001`
@@ -120,7 +142,9 @@ curl -s http://127.0.0.1:8000/v1/search \
 - 抽取帧：`data/frames/<media_id>`
 - embedding：`EMBEDDING_BACKEND=hash`、256 维；真实多模态检索使用 `EMBEDDING_BACKEND=wemm`、2048 维
 
-可通过 `VIDEO_SEARCH_ADDR`、`VIDEO_SEARCH_INDEX`、`VIDEO_SEARCH_FRAME_DIR`、`VIDEO_SEARCH_TASK_FILE`、`VIDEO_SCENE_WORKERS`、`VIDEO_SCENE_OVERLAP`、`VIDEO_SCENE_SAMPLE_FPS`、`VIDEO_SCENE_DETECTION_WIDTH`、`VIDEO_FRAME_WORKERS`、`VIDEO_FRAME_WIDTH`、`VIDEO_FRAME_TIMEOUT`、`VIDEO_FFMPEG_HWACCEL`、`VIDEO_SCENE_REFINE_WINDOWS`、`VIDEO_FAST_MODE`、`VIDEO_FAST_MAX_SCENES`、`VIDEO_IMAGE_BATCH_SIZE`、`EMBEDDING_ENDPOINT`、`EMBEDDING_TIMEOUT`、`EMBEDDING_DIMENSION`、`WEMM_IMAGE_PROMPT`、`EMBEDDING_BATCH_SIZE`、`WEMM_MIN_IMAGE_PIXELS`、`WEMM_MAX_IMAGE_PIXELS` 覆盖。`VIDEO_SCENE_WORKERS` 默认 4，`VIDEO_FRAME_WORKERS` 默认 4，`VIDEO_FRAME_WIDTH` 默认 640，`VIDEO_FRAME_TIMEOUT` 默认 45s；准确模式默认先用关键帧做低成本变化检测，再把关键帧时间作为切点候选，避免对整部电影启动大量随机 ffmpeg。若设置 `VIDEO_SCENE_REFINE_WINDOWS=true`，才会对候选窗口做 2 FPS、640 像素宽度的原始阈值精检，边界更精确但耗时明显增加。`VIDEO_FFMPEG_HWACCEL` 默认 `auto`，分镜检测和抽帧都优先尝试 CUDA，失败时自动回退 CPU；10-bit 视频会使用匹配的 `p010le` 下载格式，也可设为 `cuda` 或 `none`。设置 `VIDEO_FAST_MODE=true`，或在上传弹窗选择快速模式，会跳过静态切镜扫描，按 `sample_interval` 均匀采样，并最多生成 `VIDEO_FAST_MAX_SCENES=32` 个低分辨率代表帧；这是交互式快速索引，可能漏掉很短的镜头，准确模式适合离线完整处理。`EMBEDDING_BATCH_SIZE` 默认 8；`WEMM_MIN_IMAGE_PIXELS` 默认 65536、`WEMM_MAX_IMAGE_PIXELS` 默认 98304，用于将高分辨率图片限制在约 240p～384px 视觉输入范围，防止视觉 token 爆炸；显存不足时将 batch 降为 4 或 1。搜索默认只展示 WeMM 余弦相似度严格大于 0.3 的结果，按相关度降序返回 16 个媒体；`mode=media` 按视频归集，`mode=scene` 按片段平铺，`limit` 分别表示媒体或片段 TopN。不使用 RRF、最大值归一化或词法分数混入排序。设置 `VIDEO_SEARCH_USE_IMAGE_EMBEDDING=true` 后，Go 会把抽取的本地帧通过 image modality 发给 Python；默认关闭，因为当前 hash fallback 不理解图像。任务状态默认保存到 `data/acquisition_tasks.json`，浏览器刷新后可继续看到历史任务；服务重启时，未完成任务会标记为“服务重启，任务未完成”，不会伪装成仍在运行。图像嵌入默认按 32 帧一批发送（可通过 `VIDEO_IMAGE_BATCH_SIZE` 调整），并在任务栏报告批次进度；单帧 ffmpeg 超过超时时间会终止，避免任务卡死。
+可通过 `VIDEO_SEARCH_ADDR`、`VIDEO_SEARCH_INDEX`、`VIDEO_SEARCH_FRAME_DIR`、`VIDEO_SEARCH_TASK_FILE`、`VIDEO_SCENE_WORKERS`、`VIDEO_SCENE_OVERLAP`、`VIDEO_SCENE_SAMPLE_FPS`、`VIDEO_SCENE_DETECTION_WIDTH`、`VIDEO_FRAME_WORKERS`、`VIDEO_FRAME_WIDTH`、`VIDEO_FRAME_TIMEOUT`、`VIDEO_FFMPEG_HWACCEL`、`VIDEO_SCENE_REFINE_WINDOWS`、`VIDEO_FAST_MODE`、`VIDEO_MAX_SCENES`、`VIDEO_FAST_MAX_SCENES`、`VIDEO_REMOTE_FRAME_WORKERS`、`VIDEO_REMOTE_CHUNK_SIZE`、`VIDEO_REMOTE_CACHE_BYTES`、`VIDEO_IMAGE_BATCH_SIZE`、`EMBEDDING_ENDPOINT`、`EMBEDDING_TIMEOUT`、`EMBEDDING_DIMENSION`、`WEMM_IMAGE_PROMPT`、`EMBEDDING_BATCH_SIZE` 覆盖。`VIDEO_SCENE_WORKERS` 默认 4，`VIDEO_FRAME_WORKERS` 默认 4，`VIDEO_FRAME_WIDTH` 默认 640，`VIDEO_FRAME_TIMEOUT` 默认 45s；准确模式默认先用关键帧做低成本变化检测，再把关键帧时间作为切点候选，避免对整部电影启动大量随机 ffmpeg。若设置 `VIDEO_SCENE_REFINE_WINDOWS=true`，才会对候选窗口做 2 FPS、640 像素宽度的原始阈值精检，边界更精确但耗时明显增加。`VIDEO_FFMPEG_HWACCEL` 默认 `auto`，分镜检测和抽帧都优先尝试 CUDA，失败时自动回退 CPU；10-bit 视频会使用匹配的 `p010le` 下载格式，也可设为 `cuda` 或 `none`。设置 `VIDEO_FAST_MODE=true`，或在上传弹窗选择快速模式，会跳过静态切镜扫描，按 `sample_interval` 均匀采样，最多 32 个画面；关键帧采样/准确模式最多 240 个画面，未指定采样间隔时默认按 30 秒采样。这是交互式快速索引，可能漏掉很短的镜头，准确模式适合离线完整处理。`EMBEDDING_BATCH_SIZE` 默认 8；WeMM 图片不再由应用层注入 `min_pixels/max_pixels`，交给 WeMM processor 的默认策略处理；如果显存不足，优先将 batch 降为 4 或 1。搜索默认只展示 WeMM 余弦相似度严格大于 0.3 的结果，按相关度降序返回 16 个媒体；`mode=media` 按视频归集，`mode=scene` 按片段平铺，`limit` 分别表示媒体或片段 TopN。不使用 RRF、最大值归一化或词法分数混入排序。设置 `VIDEO_SEARCH_USE_IMAGE_EMBEDDING=true` 后，Go 会把抽取的本地帧通过 image modality 发给 Python；默认关闭，因为当前 hash fallback 不理解图像。任务状态默认保存到 `data/acquisition_tasks.json`，浏览器刷新后可继续看到历史任务；服务重启时，未完成任务会标记为“服务重启，任务未完成”，不会伪装成仍在运行。图像嵌入默认按 32 帧一批发送（可通过 `VIDEO_IMAGE_BATCH_SIZE` 调整），只控制每批大小，不限制总画面数，并在任务栏报告批次进度；单帧 ffmpeg 超过超时时间会终止，避免任务卡死。
+
+远程（阿里云盘）视频不下载整个文件。容器类型由**首字节嗅探**判定（偏移 4 处是 `ftyp` → MP4，`1A 45 DF A3` → Matroska/WebM），而不是看云盘文件名后缀；MP4 用 `github.com/Eyevinn/mp4ff` 解析 `moov`，大 `moov` 默认按 1 MiB 分块、4 路并发 Range 拉取，并缓存解析后的索引；Matroska 用自研 EBML 解析器从 `SeekHead` 直接取 `Info`/`Tracks`/`Cues`，两者都只读元数据。抽帧时按索引**精确 Range** 下载单个 I 帧样本，MP4 转成 Annex-B、Matroska 的 VP8/VP9/AV1 封成单帧 IVF，再交给 `ffmpeg -f h264|hevc|ivf` 解码成 JPG。`VIDEO_REMOTE_CHUNK_SIZE`（默认 4194304）只用于索引不可用时回退的 FFmpeg 顺序读取，`VIDEO_REMOTE_CACHE_BYTES`（默认 100663296）是单次采集的区间缓存上限，超出按 LRU 淘汰；`VIDEO_REMOTE_MP4_MOOV_WORKERS`、`VIDEO_REMOTE_MP4_MOOV_CHUNK_SIZE` 控制 MP4 首次元数据下载，`VIDEO_REMOTE_INDEX_CACHE_DIR` 控制索引缓存目录。任务元数据里的 `remote_range.download_ratio`、`remote_container_index` 与 `remote_container_index_cache` 记录真实流量、索引摘要和缓存状态，详见 `docs/handoff.md`。
 
 采集任务提交前会对源文件计算 SHA-256 内容指纹。相同内容即使路径或文件名不同，也会复用已处理媒体或正在执行的任务，不会重复解析、抽帧和嵌入；文件内容发生变化后会创建新任务。旧版本索引若尚未保存指纹，则对同一 `local_path` 做兼容去重。
 
@@ -163,10 +187,16 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `GET /v1/media/{media_id}/frames/{filename}`：查看 Go 抽取的代表帧。
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
 - `DELETE /v1/media/{media_id}`：删除媒体及其场景索引。
-- `POST /v1/acquisitions`：提交服务端本地视频路径，异步执行解析、分镜、抽帧和嵌入。
+- `POST /v1/media/batch/delete`：批量删除选中的媒体、关键帧及其向量，body 为 `{"media_ids":["..."]}`。
+- `POST /v1/acquisitions`：提交服务端本地视频路径，任务立即入队（`queued`）返回，不读取文件内容；由后台 worker 领取执行。
+- `POST /v1/acquisitions/batch`：单次请求批量入队多个采集任务，逐条返回创建结果与失败原因。
 - `GET /v1/acquisitions`、`GET /v1/acquisitions/{task_id}`：查看采集任务。
-- `DELETE /v1/acquisitions/{task_id}`：停止未完成的采集任务。
+- `DELETE /v1/acquisitions/{task_id}`：取消排队/运行中的任务；终态任务则移除记录。
+- `POST /v1/acquisitions/batch/stop`：批量停止选中的排队/运行任务，body 为 `{"task_ids":["..."]}`。
+- `POST /v1/acquisitions/batch/delete`：批量删除选中的已完成、失败或已停止任务记录，正在处理的任务需要先停止。
+- `POST /v1/acquisitions/clear`：按状态批量移除终态任务记录；页面的“清理终态”会清理 `completed`、`failed` 与 `canceled`。
 - `POST /v1/files/validate`：批量检查服务端本地文件是否可读。
+- `POST /v1/files/inspect`：检查服务端本地路径，并返回文件/目录类型及可用性。
 - `POST /v1/files/scan`：扫描服务端本地目录中的视频文件。
 - `GET /v1/connectors/alipan/status`：查看阿里云盘登录状态（只返回公开账户信息）。
 - `POST /v1/connectors/alipan/login/start`：创建扫码授权会话（默认 tickstep；可切换 official）。
@@ -184,6 +214,6 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 
 1. 将 `FileStore` 替换为 PostgreSQL + Qdrant adapter，并保留 `IndexStore` 接口。
 2. 增加媒体级 video embedding，形成“视频粗召回 → 场景精排”的两级索引。
-3. 完成阿里云盘文件浏览、Range 读取和远程视频采集；登录 connector 已先落地，文件 connector 后续复用同一官方账户会话。
+3. 用真实阿里云盘文件复测 MP4/Matroska 容器索引的实际流量（当前证据来自合成 fixture），并补齐 fragmented MP4、无 `Cues` 的 Matroska、laced block 和 MPEG-TS/AVI 等回退路径。
 4. 增加来源 connector、批量任务队列、字幕分段和独立 text embedding。
 4. 加入 scene grouping、Media entity resolution、fingerprint 和 Recall@10 benchmark。

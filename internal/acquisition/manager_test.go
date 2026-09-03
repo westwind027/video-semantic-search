@@ -2,6 +2,7 @@ package acquisition
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,13 +16,57 @@ import (
 )
 
 type blockingProcessor struct {
+	mu      sync.Mutex
+	calls   int
 	started chan struct{}
 }
 
 func (p *blockingProcessor) Process(ctx context.Context, _ string, _ Request, _ ProgressFunc) (model.Media, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
 	close(p.started)
 	<-ctx.Done()
 	return model.Media{}, ctx.Err()
+}
+
+func (p *blockingProcessor) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// concurrentProcessor tracks the peak number of simultaneously running
+// Process calls, which is how a worker pool's width is measured.
+type concurrentProcessor struct {
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+}
+
+func (p *concurrentProcessor) Process(ctx context.Context, mediaID string, _ Request, _ ProgressFunc) (model.Media, error) {
+	p.mu.Lock()
+	p.inFlight++
+	if p.inFlight > p.peak {
+		p.peak = p.inFlight
+	}
+	p.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return model.Media{}, ctx.Err()
+	case <-time.After(30 * time.Millisecond):
+	}
+	p.mu.Lock()
+	p.inFlight--
+	p.mu.Unlock()
+	duration := 1.0
+	return model.Media{MediaID: mediaID, Type: "movie", Title: "queued", Duration: &duration, Scenes: []model.Scene{{Start: 0, End: 1}}}, nil
+}
+
+func (p *concurrentProcessor) Peak() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.peak
 }
 
 type managerEmbedder struct{}
@@ -155,12 +200,17 @@ func TestManagerDeduplicatesSameContentAcrossPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForManagerState(t, manager, first.ID, "completed")
+	// The content fingerprint of a local file is computed by the worker, so
+	// the duplicate is accepted as a queued task first and only folded into
+	// the completed media once the worker has hashed its content.
 	second, err := manager.Submit(Request{LocalPath: secondPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ID != first.ID || second.State != "completed" {
-		t.Fatalf("duplicate task = %+v, original = %+v", second, first)
+	waitForManagerState(t, manager, second.ID, "completed")
+	current, _ := manager.Get(second.ID)
+	if current.MediaID != first.ID || current.State != "completed" {
+		t.Fatalf("duplicate task = %+v, original = %+v", current, first)
 	}
 	if calls := processor.Calls(); calls != 1 {
 		t.Fatalf("processor calls = %d, want 1", calls)
@@ -262,6 +312,187 @@ func TestManagerSkipsLegacyIndexedFileAtSamePath(t *testing.T) {
 	}
 	if calls := processor.Calls(); calls != 0 {
 		t.Fatalf("processor calls = %d, want 0", calls)
+	}
+}
+
+func TestManagerRunsTasksWithLimitedWorkers(t *testing.T) {
+	t.Setenv("VIDEO_TASK_WORKERS", "1")
+	directory := t.TempDir()
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	processor := &concurrentProcessor{}
+	manager := NewManager(processor, search.NewEngine(index, managerEmbedder{}, false))
+	var tasks []Task
+	for i := 0; i < 4; i++ {
+		path := filepath.Join(directory, fmt.Sprintf("movie-%d.mp4", i))
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("content %d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		task, err := manager.Submit(Request{LocalPath: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, task)
+	}
+	for _, task := range tasks {
+		waitForManagerState(t, manager, task.ID, "completed")
+	}
+	if peak := processor.Peak(); peak != 1 {
+		t.Fatalf("peak concurrent processor calls = %d, want 1", peak)
+	}
+}
+
+func TestManagerStopCancelsQueuedTask(t *testing.T) {
+	t.Setenv("VIDEO_TASK_WORKERS", "1")
+	directory := t.TempDir()
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	firstPath := filepath.Join(directory, "first.mp4")
+	secondPath := filepath.Join(directory, "second.mp4")
+	for _, path := range []string{firstPath, secondPath} {
+		if err := os.WriteFile(path, []byte(path), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	processor := &blockingProcessor{started: make(chan struct{})}
+	manager := NewManager(processor, search.NewEngine(index, managerEmbedder{}, false))
+	first, err := manager.Submit(Request{LocalPath: firstPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+	second, err := manager.Submit(Request{LocalPath: secondPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped := manager.StopMany([]string{second.ID, second.ID}); len(stopped) != 1 || stopped[0] != second.ID {
+		t.Fatalf("StopMany returned %v for queued task", stopped)
+	}
+	current, ok := manager.Get(second.ID)
+	if !ok || current.State != "canceled" {
+		t.Fatalf("queued task = %+v, want canceled", current)
+	}
+	if stopped := manager.StopMany([]string{first.ID}); len(stopped) != 1 || stopped[0] != first.ID {
+		t.Fatalf("StopMany returned %v for running task", stopped)
+	}
+	waitForManagerState(t, manager, first.ID, "canceled")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if processor.Calls() == 1 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("processor calls = %d, want 1: the canceled queued task must never reach the processor", processor.Calls())
+}
+
+func TestManagerRemoveAndClearTerminalTasks(t *testing.T) {
+	t.Setenv("VIDEO_TASK_WORKERS", "1")
+	directory := t.TempDir()
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	var paths []string
+	for i := 0; i < 3; i++ {
+		path := filepath.Join(directory, fmt.Sprintf("movie-%d.mp4", i))
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("content %d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	processor := &concurrentProcessor{}
+	manager := NewManager(processor, search.NewEngine(index, managerEmbedder{}, false))
+	first, err := manager.Submit(Request{LocalPath: paths[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Submit(Request{LocalPath: paths[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := &blockingProcessor{started: make(chan struct{})}
+	blockingManager := NewManager(blocking, search.NewEngine(index, managerEmbedder{}, false))
+	running, err := blockingManager.Submit(Request{LocalPath: paths[2]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+	waitForManagerState(t, manager, first.ID, "completed")
+	waitForManagerState(t, manager, second.ID, "completed")
+	if manager.Remove(running.ID) {
+		t.Fatal("Remove accepted a running task")
+	}
+	if removed := manager.RemoveMany([]string{first.ID, first.ID}); len(removed) != 1 || removed[0] != first.ID {
+		t.Fatalf("RemoveMany rejected a completed task: %v", removed)
+	}
+	if _, exists := manager.Get(first.ID); exists {
+		t.Fatal("removed task is still listed")
+	}
+	if removed := manager.Clear([]string{"queued", "running", "bogus"}); removed != 0 {
+		t.Fatalf("Clear removed %d tasks for non-terminal states", removed)
+	}
+	if removed := manager.Clear([]string{"completed"}); removed != 1 {
+		t.Fatalf("Clear removed %d completed tasks, want 1", removed)
+	}
+	if _, exists := manager.Get(second.ID); exists {
+		t.Fatal("cleared task is still listed")
+	}
+	if _, ok := blockingManager.Stop(running.ID); !ok {
+		t.Fatal("Stop returned false for running task")
+	}
+	waitForManagerState(t, blockingManager, running.ID, "canceled")
+	if removed := manager.Clear([]string{"failed", "canceled"}); removed != 0 {
+		t.Fatalf("Clear removed %d tasks from a different manager", removed)
+	}
+	if removed := blockingManager.Clear([]string{"failed", "canceled"}); removed != 1 {
+		t.Fatalf("Clear removed %d canceled tasks, want 1", removed)
+	}
+}
+
+func TestManagerRebuildsEmbeddingsWithoutReprocessingVideo(t *testing.T) {
+	directory := t.TempDir()
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	engine := search.NewEngine(index, managerEmbedder{}, false)
+	media := model.Media{MediaID: "rebuild-media", Title: "Rebuild", Scenes: []model.Scene{{Start: 0, End: 1, PreviewPath: filepath.Join(directory, "frame.jpg")}}}
+	if _, err := engine.Index(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	processor := &immediateProcessor{}
+	manager := NewManager(processor, engine)
+	task, err := manager.RebuildEmbeddings(media.MediaID, embedding.ImageProfileCompressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Operation != "embedding_rebuild" || task.EmbeddingProfile != "compressed" {
+		t.Fatalf("rebuild task = %+v", task)
+	}
+	completed := waitForManagerState(t, manager, task.ID, "completed")
+	if completed.EmbeddingProfile != "compressed" || processor.Calls() != 0 {
+		t.Fatalf("completed task = %+v, processor calls = %d", completed, processor.Calls())
+	}
+	stored, ok := index.GetMedia(media.MediaID)
+	if !ok || stored.Metadata["embedding_profile"] != "compressed" {
+		t.Fatalf("stored media metadata = %+v", stored.Metadata)
 	}
 }
 

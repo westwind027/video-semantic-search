@@ -10,13 +10,39 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"video-semantic-search/internal/embedding"
 	"video-semantic-search/internal/model"
 	"video-semantic-search/internal/search"
 )
+
+const (
+	defaultTaskWorkers = 2
+	taskQueueCapacity  = 1024
+)
+
+type jobKind string
+
+const (
+	jobKindAcquisition jobKind = "acquisition"
+	jobKindRebuild     jobKind = "embedding_rebuild"
+)
+
+// queuedJob is one task waiting for a worker. Submission only enqueues cheap
+// records; the heavy work happens in the worker that claims it.
+type queuedJob struct {
+	kind         jobKind
+	taskID       string
+	request      Request
+	mediaID      string
+	imageProfile embedding.ImageProfile
+	ctx          context.Context
+	cancel       context.CancelFunc
+}
 
 type Task struct {
 	ID                 string       `json:"id"`
@@ -28,6 +54,8 @@ type Task struct {
 	SceneCount         int          `json:"scene_count,omitempty"`
 	EmbeddingModel     string       `json:"embedding_model,omitempty"`
 	EmbeddingDimension int          `json:"embedding_dimension,omitempty"`
+	EmbeddingProfile   string       `json:"embedding_profile,omitempty"`
+	Operation          string       `json:"operation,omitempty"`
 	LocalPath          string       `json:"local_path,omitempty"`
 	Source             string       `json:"source,omitempty"`
 	DriveID            string       `json:"drive_id,omitempty"`
@@ -45,10 +73,12 @@ type Manager struct {
 	processor Processor
 	engine    *search.Engine
 	taskFile  string
+	workers   int
 
 	mu          sync.RWMutex
 	tasks       map[string]Task
 	cancel      map[string]context.CancelFunc
+	queue       chan queuedJob
 	lastPersist time.Time
 }
 
@@ -64,9 +94,36 @@ func NewManagerWithTaskFile(processor Processor, engine *search.Engine, taskFile
 }
 
 func newManager(processor Processor, engine *search.Engine, taskFile string) *Manager {
-	manager := &Manager{processor: processor, engine: engine, taskFile: taskFile, tasks: make(map[string]Task), cancel: make(map[string]context.CancelFunc)}
+	workers := taskWorkersFromEnv()
+	manager := &Manager{
+		processor: processor,
+		engine:    engine,
+		taskFile:  taskFile,
+		workers:   workers,
+		tasks:     make(map[string]Task),
+		cancel:    make(map[string]context.CancelFunc),
+		queue:     make(chan queuedJob, taskQueueCapacity),
+	}
+	for i := 0; i < workers; i++ {
+		go manager.worker()
+	}
 	manager.loadTasks()
 	return manager
+}
+
+// taskWorkersFromEnv bounds how many tasks process concurrently. Every worker
+// drives its own ffmpeg/embedding pipeline, so more workers trade throughput
+// for CPU, GPU and remote bandwidth contention.
+func taskWorkersFromEnv() int {
+	value := strings.TrimSpace(os.Getenv("VIDEO_TASK_WORKERS"))
+	if value == "" {
+		return defaultTaskWorkers
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return defaultTaskWorkers
+	}
+	return parsed
 }
 
 func (m *Manager) Submit(request Request) (Task, error) {
@@ -85,33 +142,31 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 		return Task{}, err
 	}
 	request.LocalPath = path
+	// A local content fingerprint is NOT computed here: submission must stay
+	// fast so a batch import queues every file immediately, and the worker
+	// that claims the task pays for hashing once, right before processing.
 	contentFingerprint := strings.TrimSpace(request.SourceFingerprint)
-	if request.IsRemote() {
-		if contentFingerprint == "" {
-			contentFingerprint = fmt.Sprintf("alipan:%s:%s", strings.TrimSpace(request.DriveID), strings.TrimSpace(request.FileID))
-		}
-	} else {
-		contentFingerprint, err = hashFile(ctx, path)
-		if err != nil {
-			return Task{}, fmt.Errorf("calculate video SHA-256: %w", err)
-		}
+	if request.IsRemote() && contentFingerprint == "" {
+		contentFingerprint = fmt.Sprintf("alipan:%s:%s", strings.TrimSpace(request.DriveID), strings.TrimSpace(request.FileID))
 	}
 	mediaID, err := model.NewMediaID()
 	if err != nil {
 		return Task{}, fmt.Errorf("create acquisition id: %w", err)
 	}
 	now := time.Now().UTC()
-	task := Task{ID: mediaID, State: "queued", Stage: StageQueued, Percent: 0, Message: "任务已创建", MediaID: mediaID, LocalPath: path, Source: request.Source, DriveID: request.DriveID, FileID: request.FileID, SourceName: request.SourceName, CreatedAt: now, UpdatedAt: now}
+	task := Task{ID: mediaID, State: "queued", Stage: StageQueued, Percent: 0, Message: "任务已创建，等待处理", MediaID: mediaID, LocalPath: path, Source: request.Source, DriveID: request.DriveID, FileID: request.FileID, SourceName: request.SourceName, CreatedAt: now, UpdatedAt: now}
 	if request.IsRemote() {
 		task.ContentFingerprint = contentFingerprint
-	} else {
-		task.ContentSHA256 = contentFingerprint
 	}
 	m.mu.Lock()
-	if existing, ok := m.findRunningTaskLocked(contentFingerprint); ok {
-		m.mu.Unlock()
-		return existing, nil
+	if contentFingerprint != "" {
+		if existing, ok := m.findRunningTaskLocked(contentFingerprint); ok {
+			m.mu.Unlock()
+			return existing, nil
+		}
 	}
+	// Without a fingerprint this only matches legacy index entries stored by
+	// local path, which FindMediaByFingerprint supports.
 	if media, ok := m.engine.FindMediaByFingerprint(contentFingerprint, path); ok {
 		if existing, exists := m.tasks[media.MediaID]; exists && existing.State == "completed" {
 			m.mu.Unlock()
@@ -124,11 +179,90 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 		return duplicate, nil
 	}
 	workContext, cancel := context.WithCancel(context.Background())
+	if ahead := len(m.queue); ahead > 0 {
+		task.Message = fmt.Sprintf("任务已创建，前方还有 %d 个任务排队", ahead)
+	}
 	m.tasks[task.ID] = task
 	m.cancel[task.ID] = cancel
 	m.persistLocked(true)
+	select {
+	case m.queue <- queuedJob{kind: jobKindAcquisition, taskID: task.ID, request: request, ctx: workContext, cancel: cancel}:
+	default:
+		delete(m.tasks, task.ID)
+		delete(m.cancel, task.ID)
+		cancel()
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("task queue is full, try again later")
+	}
 	m.mu.Unlock()
-	go m.run(task.ID, request, workContext)
+	return task, nil
+}
+
+// RebuildEmbeddings queues a vector-only task for an indexed video. It reuses
+// the existing extracted frames and never invokes the video processor.
+func (m *Manager) RebuildEmbeddings(mediaID string, profile embedding.ImageProfile) (Task, error) {
+	if m == nil || m.engine == nil {
+		return Task{}, fmt.Errorf("acquisition manager is not configured")
+	}
+	mediaID = strings.TrimSpace(mediaID)
+	if mediaID == "" {
+		return Task{}, fmt.Errorf("media_id is required")
+	}
+	if profile == "" {
+		profile = embedding.ImageProfileOriginal
+	}
+	if profile != embedding.ImageProfileOriginal && profile != embedding.ImageProfileCompressed {
+		return Task{}, fmt.Errorf("unsupported image profile %q", profile)
+	}
+	media, ok := m.engine.GetMedia(mediaID)
+	if !ok {
+		return Task{}, fmt.Errorf("media %q not found", mediaID)
+	}
+
+	now := time.Now().UTC()
+	m.mu.Lock()
+	for _, existing := range m.tasks {
+		if existing.Operation == string(jobKindRebuild) && existing.MediaID == mediaID && (existing.State == "queued" || existing.State == "running") {
+			m.mu.Unlock()
+			return existing, nil
+		}
+	}
+	taskID, err := model.NewMediaID()
+	if err != nil {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("create rebuild task id: %w", err)
+	}
+	task := Task{
+		ID:               taskID,
+		State:            "queued",
+		Stage:            StageQueued,
+		Percent:          0,
+		Message:          "等待重新生成嵌入",
+		MediaID:          mediaID,
+		SceneCount:       len(media.Scenes),
+		SourceName:       media.Title,
+		EmbeddingProfile: string(profile),
+		Operation:        string(jobKindRebuild),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	workContext, cancel := context.WithCancel(context.Background())
+	if ahead := len(m.queue); ahead > 0 {
+		task.Message = fmt.Sprintf("等待重新生成嵌入，前方还有 %d 个任务排队", ahead)
+	}
+	m.tasks[task.ID] = task
+	m.cancel[task.ID] = cancel
+	m.persistLocked(true)
+	select {
+	case m.queue <- queuedJob{kind: jobKindRebuild, taskID: task.ID, mediaID: mediaID, imageProfile: profile, ctx: workContext, cancel: cancel}:
+	default:
+		delete(m.tasks, task.ID)
+		delete(m.cancel, task.ID)
+		cancel()
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("task queue is full, try again later")
+	}
+	m.mu.Unlock()
 	return task, nil
 }
 
@@ -169,12 +303,126 @@ func (m *Manager) Stop(taskID string) (Task, bool) {
 	return task, true
 }
 
-func (m *Manager) run(taskID string, request Request, workContext context.Context) {
+// StopMany cancels every queued or running task in taskIDs. It returns the
+// IDs that were actually transitioned to canceled, preserving the first
+// occurrence order and ignoring duplicate or terminal IDs.
+func (m *Manager) StopMany(taskIDs []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stopped := make([]string, 0, len(taskIDs))
+	seen := make(map[string]struct{}, len(taskIDs))
+	now := time.Now().UTC()
+	for _, taskID := range taskIDs {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" {
+			continue
+		}
+		if _, exists := seen[taskID]; exists {
+			continue
+		}
+		seen[taskID] = struct{}{}
+		task, ok := m.tasks[taskID]
+		if !ok || task.State == "completed" || task.State == "failed" || task.State == "canceled" {
+			continue
+		}
+		if cancel := m.cancel[taskID]; cancel != nil {
+			cancel()
+		}
+		task.State = "canceled"
+		task.Stage = StageCanceled
+		task.Message = "任务已停止"
+		task.UpdatedAt = now
+		m.tasks[taskID] = task
+		stopped = append(stopped, taskID)
+	}
+	if len(stopped) > 0 {
+		m.persistLocked(true)
+	}
+	return stopped
+}
+
+func (m *Manager) worker() {
+	for job := range m.queue {
+		m.execute(job)
+	}
+}
+
+// execute claims one queued job. A task stopped while it was queued is
+// dropped here without ever reaching the processor.
+func (m *Manager) execute(job queuedJob) {
 	defer func() {
 		m.mu.Lock()
-		delete(m.cancel, taskID)
+		delete(m.cancel, job.taskID)
 		m.mu.Unlock()
+		job.cancel()
 	}()
+	m.mu.RLock()
+	task, ok := m.tasks[job.taskID]
+	m.mu.RUnlock()
+	if !ok || task.State != "queued" {
+		return
+	}
+	if job.kind == jobKindRebuild {
+		m.runRebuild(job.taskID, job.mediaID, job.imageProfile, job.ctx)
+		return
+	}
+	m.run(job.taskID, job.request, job.ctx)
+}
+
+func (m *Manager) runRebuild(taskID, mediaID string, profile embedding.ImageProfile, workContext context.Context) {
+	m.update(taskID, Progress{Stage: StageEmbedding, Percent: 0.02, Message: "正在重新生成视频嵌入"})
+	result, err := m.engine.RebuildEmbeddings(workContext, mediaID, profile, func(done, total int) {
+		percent := float32(0.02)
+		if total > 0 {
+			percent += 0.97 * float32(done) / float32(total)
+		}
+		m.update(taskID, Progress{Stage: StageEmbedding, Percent: percent, Message: fmt.Sprintf("正在重新生成嵌入 %d/%d", done, total)})
+	})
+	if err != nil {
+		if workContext.Err() != nil {
+			return
+		}
+		m.fail(taskID, err)
+		return
+	}
+	m.mu.Lock()
+	task, ok := m.tasks[taskID]
+	if ok && task.State != "canceled" {
+		task.State = "completed"
+		task.Stage = StageCompleted
+		task.Percent = 1
+		task.Message = "已完成视频嵌入重建"
+		task.SceneCount = result.SceneCount
+		task.EmbeddingModel = result.Model
+		task.EmbeddingDimension = result.Dimension
+		task.EmbeddingProfile = string(profile)
+		if result.Profile != "" {
+			task.EmbeddingProfile = result.Profile
+		}
+		task.UpdatedAt = time.Now().UTC()
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) run(taskID string, request Request, workContext context.Context) {
+	// The content fingerprint of a local file is computed here instead of at
+	// submission: submitting a batch must not wait on reading every file, so
+	// the worker pays for hashing once, right before processing starts.
+	if !request.IsRemote() {
+		digest, err := hashFile(workContext, request.LocalPath)
+		if err != nil {
+			if workContext.Err() == nil {
+				m.fail(taskID, fmt.Errorf("calculate video SHA-256: %w", err))
+			}
+			return
+		}
+		if m.claimFingerprint(taskID, digest, request) {
+			return
+		}
+	}
 	m.update(taskID, Progress{Stage: StageParsing, Percent: 0.02, Message: "任务开始"})
 	media, err := m.processor.Process(workContext, taskID, request, func(progress Progress) {
 		m.update(taskID, progress)
@@ -227,6 +475,7 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 		task.SceneCount = result.SceneCount
 		task.EmbeddingModel = result.Model
 		task.EmbeddingDimension = result.Dimension
+		task.EmbeddingProfile = result.Profile
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
@@ -269,6 +518,130 @@ func (m *Manager) fail(taskID string, err error) {
 	task.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = task
 	m.persistLocked(true)
+}
+
+// claimFingerprint records the computed content hash of a local task and folds
+// the task into an existing one when the same content is already queued,
+// running or indexed. It returns true when the task needs no further work.
+func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool {
+	m.mu.Lock()
+	task, ok := m.tasks[taskID]
+	if !ok || task.State != "queued" {
+		// Stopped while hashing; the state is already final.
+		m.mu.Unlock()
+		return true
+	}
+	if existing, ok := m.findRunningTaskLocked(digest); ok && existing.ID != taskID {
+		task.State = "canceled"
+		task.Stage = StageCanceled
+		task.Message = fmt.Sprintf("与任务 %s 内容相同，已跳过", shortTaskID(existing.ID))
+		task.UpdatedAt = time.Now().UTC()
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+		m.mu.Unlock()
+		return true
+	}
+	task.ContentSHA256 = digest
+	task.UpdatedAt = time.Now().UTC()
+	m.tasks[taskID] = task
+	m.persistLocked(true)
+	// Same lookup pattern as Submit: the engine has its own locking, and the
+	// tiny race window just means a duplicate is caught by the next check.
+	media, mediaFound := m.engine.FindMediaByFingerprint(digest, request.LocalPath)
+	if mediaFound {
+		task.State = "completed"
+		task.Stage = StageCompleted
+		task.Percent = 1
+		task.Message = "视频内容已存在，已跳过重复处理"
+		task.MediaID = media.MediaID
+		task.SceneCount = len(media.Scenes)
+		task.UpdatedAt = time.Now().UTC()
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+		m.mu.Unlock()
+		return true
+	}
+	m.mu.Unlock()
+	return false
+}
+
+func shortTaskID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// Remove deletes one terminal task record. Queued and running tasks must go
+// through Stop first so their worker contexts are canceled properly.
+func (m *Manager) Remove(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok || task.State != "completed" && task.State != "failed" && task.State != "canceled" {
+		return false
+	}
+	delete(m.tasks, taskID)
+	m.persistLocked(true)
+	return true
+}
+
+// RemoveMany deletes selected terminal task records in one persistence
+// operation. Active tasks are intentionally left untouched; callers must
+// stop them first so their worker contexts are canceled properly.
+func (m *Manager) RemoveMany(taskIDs []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	removed := make([]string, 0, len(taskIDs))
+	seen := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" {
+			continue
+		}
+		if _, exists := seen[taskID]; exists {
+			continue
+		}
+		seen[taskID] = struct{}{}
+		task, ok := m.tasks[taskID]
+		if !ok || task.State != "completed" && task.State != "failed" && task.State != "canceled" {
+			continue
+		}
+		delete(m.tasks, taskID)
+		removed = append(removed, taskID)
+	}
+	if len(removed) > 0 {
+		m.persistLocked(true)
+	}
+	return removed
+}
+
+// Clear deletes every terminal task whose state is listed. Unknown or
+// non-terminal states are ignored.
+func (m *Manager) Clear(states []string) int {
+	removable := make(map[string]bool, len(states))
+	for _, state := range states {
+		if state == "completed" || state == "failed" || state == "canceled" {
+			removable[state] = true
+		}
+	}
+	if len(removable) == 0 {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := 0
+	for id, task := range m.tasks {
+		if removable[task.State] {
+			delete(m.tasks, id)
+			removed++
+		}
+	}
+	if removed > 0 {
+		m.persistLocked(true)
+	}
+	return removed
 }
 
 func (m *Manager) findRunningTaskLocked(fingerprint string) (Task, bool) {

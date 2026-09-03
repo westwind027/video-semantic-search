@@ -95,6 +95,56 @@ func TestCompleteLoginExchangesTokenAndPersistsPublicProfile(t *testing.T) {
 	}
 }
 
+func TestStatusRefreshesExpiringOfficialToken(t *testing.T) {
+	refreshCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/token" {
+			http.NotFound(response, request)
+			return
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode refresh payload: %v", err)
+		}
+		if payload["grant_type"] != "refresh_token" || payload["refresh_token"] != "refresh-secret" {
+			t.Errorf("unexpected refresh payload: %v", payload)
+		}
+		refreshCalls++
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"access_token":  "refreshed-access",
+			"refresh_token": "rotated-refresh",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "profile.json")
+	manager := NewManager(Config{
+		LoginMode:     "official",
+		ClientID:      "client-id",
+		ClientSecret:  "client-secret",
+		TokenEndpoint: server.URL + "/token",
+		ConfigPath:    configPath,
+	})
+	if _, err := manager.persistProfile("official-oauth", "expired-access", "refresh-secret", time.Now().Add(-time.Minute), "", driveInfoResponse{UserID: "user-1", DefaultDriveID: "drive-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status := manager.StatusContext(context.Background())
+	if !status.Connected || status.Profile == nil || status.Profile.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("status after refresh = %+v", status)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if token, err := manager.AccessToken(context.Background()); err != nil || token != "refreshed-access" {
+		t.Fatalf("access token after status refresh = %q, %v", token, err)
+	}
+	if stored, err := loadProfile(configPath); err != nil || stored == nil || stored.RefreshToken != "rotated-refresh" {
+		t.Fatalf("stored refreshed profile = %+v, %v", stored, err)
+	}
+}
+
 func TestTickstepLoginPollsQRCodeAndRefreshesToken(t *testing.T) {
 	var createIP string
 	var createUserAgent string

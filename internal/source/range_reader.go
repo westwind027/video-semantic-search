@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,9 +18,24 @@ import (
 
 var ErrRangeUnsupported = errors.New("remote source does not support HTTP range requests")
 
-// RangeReader is a seekable view over a remote file. It fetches aligned byte
-// chunks on demand and shares them between all FFmpeg processes used for one
-// acquisition. The reader deliberately does not create a full local copy.
+const (
+	// DefaultChunkSize is the aligned unit used by sequential readers such as
+	// the FFmpeg range proxy, where one large request per hop beats many small
+	// ones. Random access never uses this grid; see FetchRange.
+	DefaultChunkSize = 4 << 20
+	// DefaultMaxCacheBytes bounds the shared range cache. Acquisition only
+	// needs container metadata plus the keyframe samples it decoded, so a long
+	// movie must not pin hundreds of megabytes of media data in memory.
+	DefaultMaxCacheBytes = 96 << 20
+	// maxRangeLength rejects absurd lengths coming from a corrupt container
+	// header before any allocation happens.
+	maxRangeLength = 256 << 20
+)
+
+// RangeReader is a seekable view over a remote file. It downloads exactly the
+// byte intervals its callers ask for and shares them between the container
+// indexers and all FFmpeg processes used for one acquisition. The reader
+// deliberately does not create a full local copy.
 type RangeReader struct {
 	URL        string
 	ChunkSize  int64
@@ -29,21 +45,32 @@ type RangeReader struct {
 	// It is intentionally opt-in: random frame reads must not download
 	// neighbouring media chunks that may never be used.
 	PrefetchChunks int
+	// MaxCacheBytes bounds the shared range cache. Zero selects the default.
+	MaxCacheBytes int64
 
 	mu          sync.Mutex
 	pos         int64
 	lastReadEnd int64
 	size        int64
-	chunks      map[int64][]byte
-	flights     map[int64]*rangeChunkFlight
+	flights     map[rangeSpan]*rangeFlight
 	requests    int64
 	bytes       int64
 	prefetchWG  sync.WaitGroup
 	refreshURL  func(context.Context) (string, error)
 	refreshMu   sync.Mutex
+
+	cache rangeCache
 }
 
-type rangeChunkFlight struct {
+// rangeSpan is an inclusive byte interval.
+type rangeSpan struct {
+	start int64
+	end   int64
+}
+
+func (s rangeSpan) length() int64 { return s.end - s.start + 1 }
+
+type rangeFlight struct {
 	done chan struct{}
 	data []byte
 	err  error
@@ -52,24 +79,42 @@ type rangeChunkFlight struct {
 type RangeStats struct {
 	Requests        int64
 	BytesDownloaded int64
-	CachedChunks    int
-	Size            int64
+	// CachedBlocks counts the disjoint byte intervals held in the cache. They
+	// are no longer aligned chunks, so one block is one fetched interval.
+	CachedBlocks int
+	CachedBytes  int64
+	Size         int64
 }
 
 func NewHTTPRangeReader(rawURL string, size int64, client *http.Client) *RangeReader {
 	if client == nil {
 		client = httpclient.NewDirectClient(45 * time.Second)
 	}
-	return &RangeReader{
-		URL:         strings.TrimSpace(rawURL),
-		ChunkSize:   4 << 20,
-		Client:      client,
-		MaxRetries:  3,
-		lastReadEnd: -1,
-		size:        size,
-		chunks:      make(map[int64][]byte),
-		flights:     make(map[int64]*rangeChunkFlight),
+	reader := &RangeReader{
+		URL:           strings.TrimSpace(rawURL),
+		ChunkSize:     DefaultChunkSize,
+		Client:        client,
+		MaxRetries:    3,
+		MaxCacheBytes: DefaultMaxCacheBytes,
+		lastReadEnd:   -1,
+		size:          size,
+		flights:       make(map[rangeSpan]*rangeFlight),
 	}
+	reader.cache.maxBytes = DefaultMaxCacheBytes
+	return reader
+}
+
+// SetMaxCacheBytes bounds how much downloaded data stays resident. Eviction is
+// least-recently-used, so the metadata and the samples still in use survive
+// while speculative media bytes are dropped first.
+func (r *RangeReader) SetMaxCacheBytes(bytes int64) {
+	if bytes <= 0 {
+		bytes = DefaultMaxCacheBytes
+	}
+	r.mu.Lock()
+	r.MaxCacheBytes = bytes
+	r.mu.Unlock()
+	r.cache.setLimit(bytes)
 }
 
 // SetPrefetchChunks changes the bounded sequential look-ahead window. Calls
@@ -94,7 +139,7 @@ func (r *RangeReader) WaitPrefetch() {
 
 // SetURLRefresher installs a callback for expiring signed URLs. Cloud drive
 // download URLs can return 403 while the file itself is still valid. The
-// callback is invoked at most once per failed chunk request generation and is
+// callback is invoked at most once per failed range request generation and is
 // serialized so concurrent frame workers share one fresh URL.
 func (r *RangeReader) SetURLRefresher(refresh func(context.Context) (string, error)) {
 	r.mu.Lock()
@@ -109,9 +154,68 @@ func (r *RangeReader) Size() int64 {
 }
 
 func (r *RangeReader) Stats() RangeStats {
+	blocks, cachedBytes := r.cache.stats()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return RangeStats{Requests: r.requests, BytesDownloaded: r.bytes, CachedChunks: len(r.chunks), Size: r.size}
+	return RangeStats{Requests: r.requests, BytesDownloaded: r.bytes, CachedBlocks: blocks, CachedBytes: cachedBytes, Size: r.size}
+}
+
+// FetchRange returns exactly the bytes in [offset, offset+length). Cached
+// intervals are reused, only the missing intervals are requested, and
+// identical concurrent requests are merged into a single one. This is the
+// entry point for random access such as container metadata and individual
+// keyframe samples: unlike a sequential read it never widens the request to
+// the aligned chunk grid, so a few hundred bytes of metadata do not cost a
+// whole 4 MiB chunk.
+func (r *RangeReader) FetchRange(ctx context.Context, offset, length int64) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("negative read offset %d", offset)
+	}
+	if length <= 0 {
+		return nil, fmt.Errorf("non-positive range length %d", length)
+	}
+	if length > maxRangeLength {
+		return nil, fmt.Errorf("range length %d exceeds the %d byte limit", length, maxRangeLength)
+	}
+	if err := r.ensureSize(ctx); err != nil {
+		return nil, err
+	}
+	if size := r.Size(); size > 0 {
+		if offset >= size {
+			return nil, io.EOF
+		}
+		if length > size-offset {
+			length = size - offset
+		}
+	}
+	data := make([]byte, length)
+	span := rangeSpan{start: offset, end: offset + length - 1}
+	copied, err := r.fill(ctx, span, span, data)
+	if err != nil {
+		return nil, err
+	}
+	if int64(copied) < length {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return data, nil
+}
+
+// ensureSize learns the remote length with a one-byte request when the source
+// did not report it, so tail-relative probes and clamping stay possible.
+func (r *RangeReader) ensureSize(ctx context.Context) error {
+	if r.Size() > 0 {
+		return nil
+	}
+	if _, err := r.loadRange(ctx, 0, 0); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if r.Size() <= 0 {
+		return errors.New("remote size is unavailable")
+	}
+	return nil
 }
 
 func (r *RangeReader) Read(p []byte) (int, error) {
@@ -152,24 +256,30 @@ func (r *RangeReader) ReadAtContext(ctx context.Context, p []byte, offset int64)
 	total := 0
 	for total < len(p) {
 		current := offset + int64(total)
-		chunkStart := r.chunkStart(current)
-		chunk, err := r.loadChunk(ctx, chunkStart)
+		wantEnd := offset + int64(len(p)) - 1
+		if size > 0 && wantEnd >= size {
+			wantEnd = size - 1
+		}
+		if wantEnd < current {
+			break
+		}
+		wanted := rangeSpan{start: current, end: wantEnd}
+		fetch := r.alignSpan(wanted, sequential)
+		copied, err := r.fill(ctx, fetch, wanted, p[total:total+int(wanted.length())])
+		total += copied
 		if err != nil {
 			r.mu.Lock()
 			r.lastReadEnd = -1
 			r.mu.Unlock()
 			return total, err
 		}
-		within := current - chunkStart
-		if within < 0 || within >= int64(len(chunk)) {
-			return total, fmt.Errorf("range reader returned invalid chunk at %d", current)
+		if copied == 0 {
+			break
 		}
-		copied := copy(p[total:], chunk[within:])
-		total += copied
-		if sequential && copied > 0 && within+int64(copied) >= int64(len(chunk)) && int64(len(chunk)) >= r.ChunkSize {
-			r.prefetchFrom(chunkStart + r.ChunkSize)
+		if sequential && fetch.length() >= r.effectiveChunkSize() && wantEnd == fetch.end {
+			r.prefetchFrom(fetch.end + 1)
 		}
-		if copied == 0 || int64(len(chunk)) < r.ChunkSize {
+		if wantEnd < fetch.end {
 			break
 		}
 	}
@@ -180,6 +290,94 @@ func (r *RangeReader) ReadAtContext(ctx context.Context, p []byte, offset int64)
 		return total, io.EOF
 	}
 	return total, nil
+}
+
+// alignSpan decides whether a read is widened to the aligned chunk grid.
+// Sequential and large reads profit from one big request per hop and from
+// sharing the cached block with the other FFmpeg processes of the same
+// acquisition. Small random reads must stay exact: widening them is what made
+// metadata probes and single keyframe samples download megabytes each.
+func (r *RangeReader) alignSpan(span rangeSpan, sequential bool) rangeSpan {
+	chunkSize := r.effectiveChunkSize()
+	if chunkSize <= 0 {
+		return span
+	}
+	if !sequential && span.length()*2 < chunkSize {
+		return span
+	}
+	start := (span.start / chunkSize) * chunkSize
+	end := ((span.end / chunkSize) * chunkSize) + chunkSize - 1
+	if size := r.Size(); size > 0 && end >= size {
+		end = size - 1
+	}
+	if end < span.end {
+		return span
+	}
+	return rangeSpan{start: start, end: end}
+}
+
+func (r *RangeReader) effectiveChunkSize() int64 {
+	r.mu.Lock()
+	chunkSize := r.ChunkSize
+	r.mu.Unlock()
+	if chunkSize <= 0 {
+		return DefaultChunkSize
+	}
+	return chunkSize
+}
+
+// fill caches the fetch span and copies the wanted span out of the cache. The
+// wanted span must be contained in the fetch span. Fetching more than is
+// copied is how sequential reads keep the aligned chunk grid, while missing
+// intervals are computed against the cache so overlapping readers never
+// download the same bytes twice.
+func (r *RangeReader) fill(ctx context.Context, fetch, wanted rangeSpan, dst []byte) (int, error) {
+	if int64(len(dst)) < wanted.length() {
+		wanted.end = wanted.start + int64(len(dst)) - 1
+	}
+	if size := r.Size(); size > 0 {
+		if fetch.start >= size || wanted.start >= size {
+			return 0, io.EOF
+		}
+		if fetch.end >= size {
+			fetch.end = size - 1
+		}
+		if wanted.end >= size {
+			wanted.end = size - 1
+		}
+	}
+	if wanted.end < wanted.start {
+		return 0, io.EOF
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		lastErr = nil
+		for _, span := range r.cache.missing(fetch.start, fetch.length()) {
+			if _, err := r.loadRange(ctx, span.start, span.end); err != nil {
+				lastErr = err
+				break
+			}
+		}
+		if lastErr != nil {
+			if errors.Is(lastErr, ctx.Err()) {
+				break
+			}
+			continue
+		}
+		copied, complete := r.cache.copyTo(wanted.start, wanted.length(), dst)
+		if complete {
+			return copied, nil
+		}
+		// A concurrent eviction dropped bytes that were just fetched.
+	}
+	copied, complete := r.cache.copyTo(wanted.start, wanted.length(), dst)
+	if lastErr != nil {
+		return copied, lastErr
+	}
+	if !complete {
+		return copied, io.ErrUnexpectedEOF
+	}
+	return copied, nil
 }
 
 func (r *RangeReader) prefetchFrom(start int64) {
@@ -196,11 +394,15 @@ func (r *RangeReader) prefetchFrom(start int64) {
 		if size > 0 && chunkStart >= size {
 			break
 		}
+		chunkEnd := chunkStart + chunkSize - 1
+		if size > 0 && chunkEnd >= size {
+			chunkEnd = size - 1
+		}
 		r.prefetchWG.Add(1)
-		go func(start int64) {
+		go func(span rangeSpan) {
 			defer r.prefetchWG.Done()
-			_, _ = r.loadChunk(context.Background(), start)
-		}(chunkStart)
+			_, _ = r.loadRange(context.Background(), span.start, span.end)
+		}(rangeSpan{start: chunkStart, end: chunkEnd})
 	}
 }
 
@@ -228,21 +430,19 @@ func (r *RangeReader) Seek(offset int64, whence int) (int64, error) {
 	return next, nil
 }
 
-func (r *RangeReader) chunkStart(offset int64) int64 {
-	chunkSize := r.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = 4 << 20
+// loadRange returns the bytes of one inclusive interval, merging identical
+// concurrent requests and reusing the shared cache. The returned slice aliases
+// cached data and must be treated as read-only.
+func (r *RangeReader) loadRange(ctx context.Context, start, end int64) ([]byte, error) {
+	if end < start {
+		return nil, io.EOF
 	}
-	return (offset / chunkSize) * chunkSize
-}
-
-func (r *RangeReader) loadChunk(ctx context.Context, start int64) ([]byte, error) {
+	if data, ok := r.cache.get(start, end-start+1); ok {
+		return data, nil
+	}
+	span := rangeSpan{start: start, end: end}
 	r.mu.Lock()
-	if cached, ok := r.chunks[start]; ok {
-		r.mu.Unlock()
-		return cached, nil
-	}
-	if flight, ok := r.flights[start]; ok {
+	if flight, ok := r.flights[span]; ok {
 		r.mu.Unlock()
 		select {
 		case <-flight.done:
@@ -251,37 +451,39 @@ func (r *RangeReader) loadChunk(ctx context.Context, start int64) ([]byte, error
 			return nil, ctx.Err()
 		}
 	}
-	flight := &rangeChunkFlight{done: make(chan struct{})}
-	r.flights[start] = flight
+	flight := &rangeFlight{done: make(chan struct{})}
+	r.flights[span] = flight
 	r.mu.Unlock()
 
-	data, size, err := r.fetchChunk(ctx, start)
+	data, size, err := r.fetchBytes(ctx, start, end)
 	r.mu.Lock()
-	if err == nil {
-		r.chunks[start] = data
-		if size > 0 {
-			r.size = size
-		}
+	if err == nil && size > 0 {
+		r.size = size
 	}
 	flight.data = data
 	flight.err = err
-	delete(r.flights, start)
+	delete(r.flights, span)
 	close(flight.done)
 	r.mu.Unlock()
+	if err == nil {
+		r.cache.insert(start, data)
+	}
 	return data, err
 }
 
-func (r *RangeReader) fetchChunk(ctx context.Context, start int64) ([]byte, int64, error) {
+// fetchBytes issues one HTTP range request for an exact interval. Retries stay
+// limited to throttling, server errors, and expired signed URLs.
+func (r *RangeReader) fetchBytes(ctx context.Context, start, end int64) ([]byte, int64, error) {
 	if strings.TrimSpace(r.currentURL()) == "" {
 		return nil, 0, errors.New("remote source URL is empty")
 	}
-	chunkSize := r.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = 4 << 20
-	}
-	end := start + chunkSize - 1
-	if size := r.Size(); size > 0 && end >= size {
-		end = size - 1
+	if size := r.Size(); size > 0 {
+		if start >= size {
+			return nil, size, io.EOF
+		}
+		if end >= size {
+			end = size - 1
+		}
 	}
 	if end < start {
 		return nil, r.Size(), io.EOF
@@ -425,6 +627,224 @@ func parseContentRange(value string) (int64, int64, int64, error) {
 		return 0, 0, 0, fmt.Errorf("invalid Content-Range size %q", value)
 	}
 	return start, end, size, nil
+}
+
+// rangeCache stores the byte intervals that were already downloaded. Blocks
+// stay sorted and non-overlapping, so one read can be assembled from several
+// earlier requests and only the missing intervals are fetched again. The cache
+// is bounded: least-recently-used blocks are dropped once the limit is
+// exceeded, which keeps a long acquisition from pinning the whole movie.
+type rangeCache struct {
+	mu       sync.Mutex
+	blocks   []*cacheBlock
+	total    int64
+	maxBytes int64
+	clock    uint64
+}
+
+type cacheBlock struct {
+	start int64
+	data  []byte
+	used  uint64
+}
+
+// end returns the exclusive end offset of the block.
+func (b *cacheBlock) end() int64 { return b.start + int64(len(b.data)) }
+
+func (c *rangeCache) setLimit(maxBytes int64) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxCacheBytes
+	}
+	c.mu.Lock()
+	c.maxBytes = maxBytes
+	c.evictLocked()
+	c.mu.Unlock()
+}
+
+func (c *rangeCache) stats() (int, int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.blocks), c.total
+}
+
+// searchLocked returns the index of the first block that could contain
+// offset, i.e. the first block whose exclusive end is greater than offset.
+func (c *rangeCache) searchLocked(offset int64) int {
+	return sort.Search(len(c.blocks), func(index int) bool {
+		return c.blocks[index].end() > offset
+	})
+}
+
+func (c *rangeCache) touchLocked(block *cacheBlock) {
+	c.clock++
+	block.used = c.clock
+}
+
+// get returns the cached bytes of one interval without copying. Callers must
+// treat the result as read-only because it aliases the shared cache.
+func (c *rangeCache) get(offset, length int64) ([]byte, bool) {
+	if length <= 0 {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	index := c.searchLocked(offset)
+	if index >= len(c.blocks) {
+		return nil, false
+	}
+	block := c.blocks[index]
+	if block.start > offset || block.end() < offset+length {
+		return nil, false
+	}
+	c.touchLocked(block)
+	from := offset - block.start
+	return block.data[from : from+length], true
+}
+
+// missing lists the sub-intervals of [offset, offset+length) that are not
+// cached yet, in ascending order.
+func (c *rangeCache) missing(offset, length int64) []rangeSpan {
+	if length <= 0 {
+		return nil
+	}
+	end := offset + length
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	spans := make([]rangeSpan, 0, 2)
+	cursor := offset
+	for index := c.searchLocked(offset); index < len(c.blocks) && cursor < end; index++ {
+		block := c.blocks[index]
+		if block.start >= end {
+			break
+		}
+		if block.start > cursor {
+			spans = append(spans, rangeSpan{start: cursor, end: minInt64(block.start, end) - 1})
+		}
+		c.touchLocked(block)
+		if block.end() > cursor {
+			cursor = block.end()
+		}
+	}
+	if cursor < end {
+		spans = append(spans, rangeSpan{start: cursor, end: end - 1})
+	}
+	return spans
+}
+
+// copyTo copies one interval out of the cache and reports whether the interval
+// was completely available.
+func (c *rangeCache) copyTo(offset, length int64, dst []byte) (int, bool) {
+	if length <= 0 {
+		return 0, true
+	}
+	if int64(len(dst)) < length {
+		length = int64(len(dst))
+	}
+	end := offset + length
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	written := 0
+	cursor := offset
+	for index := c.searchLocked(offset); index < len(c.blocks) && cursor < end; index++ {
+		block := c.blocks[index]
+		if block.start >= end {
+			break
+		}
+		if block.start > cursor {
+			return written, false
+		}
+		from := cursor - block.start
+		to := minInt64(end, block.end()) - block.start
+		copied := copy(dst[written:], block.data[from:to])
+		written += copied
+		cursor += int64(copied)
+		c.touchLocked(block)
+		if int64(copied) < to-from {
+			return written, false
+		}
+	}
+	return written, cursor >= end
+}
+
+// insert adds downloaded bytes. The new interval is clipped against blocks
+// that appeared while it was in flight, which keeps the list sorted and
+// non-overlapping without copying media data.
+func (c *rangeCache) insert(offset int64, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	end := offset + int64(len(data))
+	c.mu.Lock()
+	pieces := make([]rangeSpan, 0, 2)
+	cursor := offset
+	for index := c.searchLocked(offset); index < len(c.blocks); index++ {
+		block := c.blocks[index]
+		if block.start >= end {
+			break
+		}
+		if block.end() <= cursor {
+			continue
+		}
+		if block.start > cursor {
+			pieces = append(pieces, rangeSpan{start: cursor, end: block.start - 1})
+		}
+		if block.end() > cursor {
+			cursor = block.end()
+		}
+		if cursor >= end {
+			break
+		}
+	}
+	if cursor < end {
+		pieces = append(pieces, rangeSpan{start: cursor, end: end - 1})
+	}
+	for _, piece := range pieces {
+		from := piece.start - offset
+		c.insertLocked(piece.start, data[from:from+piece.length()])
+	}
+	c.evictLocked()
+	c.mu.Unlock()
+}
+
+func (c *rangeCache) insertLocked(start int64, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	block := &cacheBlock{start: start, data: data}
+	c.touchLocked(block)
+	index := sort.Search(len(c.blocks), func(position int) bool {
+		return c.blocks[position].start > start
+	})
+	c.blocks = append(c.blocks, nil)
+	copy(c.blocks[index+1:], c.blocks[index:])
+	c.blocks[index] = block
+	c.total += int64(len(data))
+}
+
+// evictLocked drops least-recently-used blocks until the cache fits its limit.
+// The last remaining block always survives, so a caller can never loop on an
+// interval that is larger than the whole cache.
+func (c *rangeCache) evictLocked() {
+	if c.maxBytes <= 0 {
+		return
+	}
+	for c.total > c.maxBytes && len(c.blocks) > 1 {
+		oldest := 0
+		for index := 1; index < len(c.blocks); index++ {
+			if c.blocks[index].used < c.blocks[oldest].used {
+				oldest = index
+			}
+		}
+		c.total -= int64(len(c.blocks[oldest].data))
+		c.blocks = append(c.blocks[:oldest], c.blocks[oldest+1:]...)
+	}
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 // RangeProxy gives command-line FFmpeg a normal seekable HTTP URL while all

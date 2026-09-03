@@ -17,6 +17,21 @@ type Result struct {
 	Model     string
 	Dimension int
 	Modality  string
+	Profile   string
+}
+
+// ImageProfile controls the image processor used before image embedding.
+// Original leaves the model's native processor settings untouched; compressed
+// explicitly bounds the image token budget for a faster, lower-memory pass.
+type ImageProfile string
+
+const (
+	ImageProfileOriginal   ImageProfile = "original"
+	ImageProfileCompressed ImageProfile = "compressed"
+)
+
+type ImageOptions struct {
+	Profile ImageProfile
 }
 
 type Health struct {
@@ -30,6 +45,13 @@ type Client interface {
 	EmbedText(context.Context, []string, string) (Result, error)
 	EmbedImages(context.Context, []string) (Result, error)
 	Health(context.Context) (Health, error)
+}
+
+// ProfiledImageClient is optional so existing embedding adapters and tests do
+// not need to change. PythonClient implements it; older adapters fall back to
+// their existing image embedding behavior.
+type ProfiledImageClient interface {
+	EmbedImagesWithOptions(context.Context, []string, ImageOptions) (Result, error)
 }
 
 type PythonClient struct {
@@ -46,7 +68,18 @@ func (c *PythonClient) EmbedText(ctx context.Context, texts []string, role strin
 }
 
 func (c *PythonClient) EmbedImages(ctx context.Context, images []string) (Result, error) {
-	return c.embed(ctx, embeddingRequest{Images: images, Modality: "image"})
+	return c.EmbedImagesWithOptions(ctx, images, ImageOptions{Profile: ImageProfileOriginal})
+}
+
+func (c *PythonClient) EmbedImagesWithOptions(ctx context.Context, images []string, options ImageOptions) (Result, error) {
+	profile := options.Profile
+	if profile == "" {
+		profile = ImageProfileOriginal
+	}
+	if profile != ImageProfileOriginal && profile != ImageProfileCompressed {
+		return Result{}, fmt.Errorf("unsupported image profile %q", profile)
+	}
+	return c.embed(ctx, embeddingRequest{Images: images, Modality: "image", ImageProfile: string(profile)})
 }
 
 func (c *PythonClient) Health(ctx context.Context) (Health, error) {
@@ -70,17 +103,19 @@ func (c *PythonClient) Health(ctx context.Context) (Health, error) {
 }
 
 type embeddingRequest struct {
-	Texts    []string `json:"texts,omitempty"`
-	Images   []string `json:"images,omitempty"`
-	Modality string   `json:"modality"`
-	Role     string   `json:"role,omitempty"`
+	Texts        []string `json:"texts,omitempty"`
+	Images       []string `json:"images,omitempty"`
+	Modality     string   `json:"modality"`
+	Role         string   `json:"role,omitempty"`
+	ImageProfile string   `json:"image_profile,omitempty"`
 }
 
 type embeddingResponse struct {
-	Embeddings [][]float32 `json:"embeddings"`
-	Model      string      `json:"model"`
-	Dimension  int         `json:"dimension"`
-	Modality   string      `json:"modality"`
+	Embeddings   [][]float32 `json:"embeddings"`
+	Model        string      `json:"model"`
+	Dimension    int         `json:"dimension"`
+	Modality     string      `json:"modality"`
+	ImageProfile string      `json:"image_profile"`
 }
 
 func (c *PythonClient) embed(ctx context.Context, payload embeddingRequest) (Result, error) {
@@ -118,5 +153,5 @@ func (c *PythonClient) embed(ctx context.Context, payload embeddingRequest) (Res
 			return Result{}, fmt.Errorf("embedding %d has dimension %d, expected %d", index, len(vector), dimension)
 		}
 	}
-	return Result{Vectors: decoded.Embeddings, Model: decoded.Model, Dimension: dimension, Modality: decoded.Modality}, nil
+	return Result{Vectors: decoded.Embeddings, Model: decoded.Model, Dimension: dimension, Modality: decoded.Modality, Profile: decoded.ImageProfile}, nil
 }

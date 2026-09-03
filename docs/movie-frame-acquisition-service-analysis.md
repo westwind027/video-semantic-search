@@ -353,32 +353,39 @@ Fine Sampling
 
 2 小时电影约 1200 个 segment，但无需全部下载，可只选择 200~400 个，并优先最低码率流。
 
-## 11. MP4 Range Sampling
+## 11. 容器索引 Range Sampling（MP4 / Matroska）
 
 如果服务器支持 HTTP Range，可以配合 FFmpeg 做远程 Seek 与按需读取，但需考虑：
 
 ```text
-MP4 moov atom
+容器元数据位置（MP4 moov / Matroska SeekHead+Cues）
 keyframe location
 server range support
 codec GOP structure
 ```
 
-当前 Go MVP 已落地两层适配：
+关键前提是：**元数据本身也不能盲扫**。把整个容器交给 FFmpeg 或顺序解析器，即使最后只抽几帧，也会因为探测、seek 校验和 chunk 对齐而拉取大量媒体数据。
 
-1. 对 progressive MP4/MOV，使用 `github.com/Eyevinn/mp4ff` 的 lazy `mdat` 模式读取 `moov`、视频轨道 sample table、同步样本（I 帧）的位置、时间戳和编码信息。读取索引时不会读取媒体 payload；索引不完整、fragmented MP4 或文件损坏时回退到 FFmpeg。
-2. 对远程 URL，Go 侧使用按 4 MiB 对齐的 HTTP Range 缓存，并通过仅监听 `127.0.0.1` 的临时 HTTP adapter 提供给命令行 FFmpeg。多个抽帧进程共享这个缓存，避免同一 GOP 被重复拉取。
+当前 Go MVP 已落地三层适配：
 
-progressive MP4 的抽帧会将目标时间先定位到前一个 I 帧，再让 FFmpeg 从该位置解码到目标画面。这样不需要下载原视频，但仍可能读取目标 GOP 内的若干非 I 帧；单独下载一个 H.264/H.265 I 帧样本通常缺少完整容器和 codec configuration，不能可靠地直接解码成 JPG。
+1. **容器识别**：读远端文件的前 32 字节做嗅探（偏移 4 处是 `ftyp` → MP4/ISOBMFF，`1A 45 DF A3` → Matroska/WebM），而不是看云盘文件名后缀。文件名是用户数据，后缀经常缺失、写错或被改名。
+2. **只读元数据的索引器**：
+   - progressive MP4/MOV：用一个 32 KiB 头部窗口沿顶层 box 头逐个跳转定位 `moov`（跳过 `mdat` 只花 16 字节），再**一次精确 Range** 拉取 `moov`，用 `github.com/Eyevinn/mp4ff` 在内存中解码 sample table，得到每个同步样本（I 帧）的偏移、长度和解码时间。
+   - Matroska/WebM：自研 EBML 解析器从 `SeekHead` 直接取得 `Info` / `Tracks` / `Cues` 的偏移，一次读入头部窗口 + 一次读取 `Cues`，即得到全部关键帧的 cluster 位置；cluster 头和 block 头**惰性解析**，只在真正抽帧时才把 cue 换算成字节区间，因此 cue 数量与请求数量无关。
+3. **精确 Range 与区间缓存**：`FetchRange` 只请求所需的字节区间，不会把一次几十字节的元数据读放大到对齐 chunk；区间缓存按有序不重叠 block 组织，支持部分命中只补缺口、并发相同区间合并为一次请求、LRU 淘汰与内存上限。回退路径（命令行 FFmpeg）仍通过仅监听 `127.0.0.1` 的临时 HTTP adapter 共享同一份缓存。
 
-如果远程服务器不支持 Range，或者容器不是当前 MP4 索引器覆盖的类型，通用 FFmpeg adapter 负责兼容性；它可能因为容器/编码器需要而读取较大范围，不能承诺始终只产生稀疏流量。远程处理结果会记录 `remote_range` 统计和 `remote_mp4_index` 摘要，便于判断实际流量。
+抽帧时**只下载一个关键帧的字节**，再还原成 FFmpeg 能直接解码的 elementary stream：MP4 的 H.264/H.265 样本把长度前缀换成 Annex-B 起始码并前置 `avcC`/`hvcC` 里的参数集；Matroska 的 VP8/VP9/AV1 封成单帧 IVF（AV1 还前置 `CodecPrivate` 里的 OBU sequence header）；然后 `ffmpeg -f h264|hevc|ivf -i pipe:0 -frames:v 1` 解码成 JPG。这修正了旧版的一个判断：“单独下载一个 I 帧样本缺少完整容器和 codec configuration，不能可靠地直接解码”——只要索引器同时取回了 codec configuration，单个关键帧就是自足可解码的，不需要读取目标 GOP 内的任何非 I 帧。
+
+当索引不可用时（fragmented MP4 的 `mvex`、缺少 `Cues` 的 Matroska、laced block、不支持的容器、元数据不完整），才会回退到“先把目标时间定位到前一个 I 帧、再让 FFmpeg 从该位置解码到目标画面”的 seek 方案；那条路径仍可能读取目标 GOP 内的若干非 I 帧。如果远程服务器不支持 Range，通用 FFmpeg adapter 负责兼容性，它可能因为容器/编码器需要而读取较大范围，不能承诺始终只产生稀疏流量。
+
+远程处理结果会记录 `remote_range` 统计（`requests`、`bytes_downloaded`、`cached_blocks`、`cached_bytes`、`download_ratio`）和 `remote_container_index` 摘要，便于判断实际流量；`download_ratio` 接近 1 就说明走了回退路径。合成 fixture 上的实测量级：1.28 MB 的 MP4 建索引 1～3 次请求、约 33 KB；987 KB 的 Matroska 建索引 2 次请求、约 64 KB；单个 12 KB 的 I 帧恰好 1 次请求、12162 字节。
 
 ## 12. 三种采集模式
 
 | 模式 | 用途 | 流量 | 完整度 |
 |---|---|---:|---:|
 | Storyboard | 站点已有 preview | 极低 | 中~高 |
-| Sparse Adaptive | 远程视频 | 低 | 中 |
+| Sparse Adaptive | 远程视频（容器索引 + 单 I 帧） | 极低 | 中 |
 | Full TransNetV2 | 高价值电影 | 高 | 很高 |
 
 推荐根据电影热度做 Progressive Indexing：

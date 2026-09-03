@@ -170,6 +170,71 @@ func TestServerDeletesMediaAndFrameDirectory(t *testing.T) {
 	}
 }
 
+func TestServerBatchDeletesMediaAndFrameDirectories(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	frameRoot := t.TempDir()
+	mediaIDs := []string{"batch-one", "batch-two"}
+	for _, mediaID := range mediaIDs {
+		frameDir := filepath.Join(frameRoot, mediaID)
+		if err := os.MkdirAll(frameDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(frameDir, "frame.jpg"), []byte("fake-jpeg"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		media := model.Media{MediaID: mediaID, Title: mediaID, Scenes: []model.Scene{{SceneID: mediaID + "-scene", Start: 0, End: 1}}}
+		if err := index.UpsertMedia(media, [][]float32{{1, 0}}, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := index.UpsertMedia(model.Media{MediaID: "keep", Title: "Keep", Scenes: []model.Scene{{SceneID: "keep-scene", Start: 0, End: 1}}, Metadata: map[string]any{}}, [][]float32{{1, 0}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewServerWithAcquisition(search.NewEngine(index, testEmbedder{}, false), index, testEmbedder{}, nil, frameRoot).Handler()
+	payload, err := json.Marshal(map[string]any{"media_ids": []string{mediaIDs[0], mediaIDs[1], mediaIDs[0], "missing"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/media/batch/delete", strings.NewReader(string(payload)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch delete status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Deleted  []string `json:"deleted"`
+		Failures []struct {
+			MediaID string `json:"media_id"`
+			Error   string `json:"error"`
+		} `json:"failures"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Deleted) != len(mediaIDs) || len(result.Failures) != 1 || result.Failures[0].MediaID != "missing" {
+		t.Fatalf("batch delete result = %+v", result)
+	}
+	for _, mediaID := range mediaIDs {
+		if _, err := os.Stat(filepath.Join(frameRoot, mediaID)); !os.IsNotExist(err) {
+			t.Fatalf("frame directory for %s still exists, err=%v", mediaID, err)
+		}
+		get := httptest.NewRecorder()
+		handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/v1/media/"+mediaID, nil))
+		if get.Code != http.StatusNotFound {
+			t.Fatalf("GET deleted media %s status = %d", mediaID, get.Code)
+		}
+	}
+	if _, ok := index.GetMedia("keep"); !ok {
+		t.Fatal("batch delete removed an unselected media")
+	}
+}
+
 func TestServerScansAndValidatesVideoPaths(t *testing.T) {
 	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
 	if err != nil {
@@ -187,6 +252,51 @@ func TestServerScansAndValidatesVideoPaths(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "clip.mp4") {
 		t.Fatalf("scan response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerInspectsLocalFileAndDirectory(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	root := t.TempDir()
+	filePath := filepath.Join(root, "clip.mp4")
+	if err := os.WriteFile(filePath, []byte("video bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(search.NewEngine(index, testEmbedder{}, false), index, testEmbedder{}).Handler()
+
+	tests := []struct {
+		name string
+		path string
+		kind string
+	}{
+		{name: "file", path: filePath, kind: "file"},
+		{name: "directory", path: root, kind: "directory"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(fileInspectRequest{Path: test.path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/files/inspect", strings.NewReader(string(body)))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("inspect status = %d, body=%s", response.Code, response.Body.String())
+			}
+			var result fileInspection
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Kind != test.kind || !result.Available {
+				t.Fatalf("inspect result = %+v", result)
+			}
+		})
 	}
 }
 

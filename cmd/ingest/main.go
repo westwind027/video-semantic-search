@@ -31,6 +31,7 @@ func main() {
 	defer indexStore.Close()
 	embedder := embedding.NewPythonClient(endpoint, 30*time.Second)
 	engine := search.NewEngine(indexStore, embedder, os.Getenv("VIDEO_SEARCH_USE_IMAGE_EMBEDDING") == "true")
+	engine.ImageProfile = imageProfileOrDefault()
 
 	input, err := os.Open(*file)
 	if err != nil {
@@ -68,6 +69,15 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("indexed media records: %d\n", count)
+}
+
+func imageProfileOrDefault() embedding.ImageProfile {
+	profile := embedding.ImageProfile(envOrDefault("VIDEO_IMAGE_PROFILE", string(embedding.ImageProfileOriginal)))
+	if profile != embedding.ImageProfileOriginal && profile != embedding.ImageProfileCompressed {
+		log.Printf("invalid VIDEO_IMAGE_PROFILE=%q, using %q", profile, embedding.ImageProfileOriginal)
+		return embedding.ImageProfileOriginal
+	}
+	return profile
 }
 
 func envOrDefault(name, fallback string) string {

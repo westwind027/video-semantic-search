@@ -17,7 +17,8 @@ type fakeEmbedder struct{}
 type fixedQueryEmbedder struct{}
 
 type batchingEmbedder struct {
-	calls []int
+	calls    []int
+	profiles []embedding.ImageProfile
 }
 
 func (e *batchingEmbedder) EmbedText(context.Context, []string, string) (embedding.Result, error) {
@@ -31,6 +32,11 @@ func (e *batchingEmbedder) EmbedImages(_ context.Context, values []string) (embe
 		vectors[index] = []float32{1, 0}
 	}
 	return embedding.Result{Vectors: vectors, Model: "batching", Dimension: 2, Modality: "image"}, nil
+}
+
+func (e *batchingEmbedder) EmbedImagesWithOptions(ctx context.Context, values []string, options embedding.ImageOptions) (embedding.Result, error) {
+	e.profiles = append(e.profiles, options.Profile)
+	return e.EmbedImages(ctx, values)
 }
 
 func (e *batchingEmbedder) Health(context.Context) (embedding.Health, error) {
@@ -236,5 +242,37 @@ func TestEngineIndexesImagesInBatchesAndReportsProgress(t *testing.T) {
 	}
 	if fmt.Sprint(progress) != "[2 4 5]" {
 		t.Fatalf("embedding progress = %v", progress)
+	}
+	if fmt.Sprint(embedder.profiles) != "[original original original]" {
+		t.Fatalf("embedding profiles = %v", embedder.profiles)
+	}
+}
+
+func TestEngineRebuildEmbeddingsUsesSelectedImageProfile(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	embedder := &batchingEmbedder{}
+	engine := NewEngine(index, embedder, false)
+	media := model.Media{MediaID: "rebuild", Title: "Rebuild", Scenes: []model.Scene{{Start: 0, End: 1, PreviewPath: "/tmp/frame.jpg"}}}
+	if _, err := engine.Index(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.RebuildEmbeddings(context.Background(), media.MediaID, embedding.ImageProfileCompressed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Modality != "image" || result.Profile != string(embedding.ImageProfileCompressed) {
+		t.Fatalf("rebuild result = %+v", result)
+	}
+	stored, ok := index.GetMedia(media.MediaID)
+	if !ok || stored.Metadata["embedding_modality"] != "image" || stored.Metadata["embedding_profile"] != "compressed" {
+		t.Fatalf("stored embedding metadata = %+v", stored.Metadata)
+	}
+	if len(embedder.profiles) != 1 || embedder.profiles[0] != embedding.ImageProfileCompressed {
+		t.Fatalf("rebuild profiles = %v", embedder.profiles)
 	}
 }

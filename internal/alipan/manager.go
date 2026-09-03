@@ -36,6 +36,9 @@ const (
 	defaultPublicIPEndpoint  = "https://httpbin.org/ip"
 	defaultProfileName       = "default"
 	loginLifetime            = 10 * time.Minute
+	tokenRefreshWindow       = 5 * time.Minute
+	autoRefreshInterval      = 1 * time.Minute
+	autoRefreshTimeout       = 15 * time.Second
 )
 
 // Config contains only non-secret connector settings. Access and refresh
@@ -119,10 +122,11 @@ type Manager struct {
 	config     Config
 	httpClient *http.Client
 
-	mu      sync.Mutex
-	profile *profile
-	loadErr error
-	pending map[string]pendingLogin
+	mu        sync.Mutex
+	refreshMu sync.Mutex
+	profile   *profile
+	loadErr   error
+	pending   map[string]pendingLogin
 }
 
 type pendingLogin struct {
@@ -292,6 +296,26 @@ func NewManager(config Config) *Manager {
 }
 
 func (m *Manager) Status() Status {
+	return m.StatusContext(context.Background())
+}
+
+// StatusContext refreshes an expiring token before reporting the connection
+// state. This matters for the UI: an expired token should not look like a
+// logged-out account when a valid refresh path still exists.
+func (m *Manager) StatusContext(ctx context.Context) Status {
+	if m == nil {
+		return Status{Provider: "aliyun-drive", Error: "阿里云盘 connector 未配置"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var refreshErr error
+	if m.tokenNeedsRefresh() {
+		refreshCtx, cancel := context.WithTimeout(ctx, autoRefreshTimeout)
+		_, refreshErr = m.AccessToken(refreshCtx)
+		cancel()
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanupPendingLocked(time.Now())
@@ -309,6 +333,9 @@ func (m *Manager) Status() Status {
 	if m.loadErr != nil {
 		status.Error = fmt.Sprintf("读取阿里云盘凭据失败: %v", m.loadErr)
 	}
+	if refreshErr != nil && status.Error == "" {
+		status.Error = fmt.Sprintf("自动续期失败: %v", refreshErr)
+	}
 	if m.profile != nil && m.profile.AccessToken != "" {
 		status.Connected = !m.profile.ExpiresAt.IsZero() && m.profile.ExpiresAt.After(time.Now())
 		public := m.profile.public()
@@ -318,6 +345,46 @@ func (m *Manager) Status() Status {
 		status.Error = "未配置阿里云盘登录参数"
 	}
 	return status
+}
+
+func (m *Manager) tokenNeedsRefresh() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.profile != nil && m.profile.AccessToken != "" && !m.profile.ExpiresAt.After(time.Now().Add(tokenRefreshWindow))
+}
+
+// StartAutoRefresh keeps a persisted login alive even while no browser is
+// open. AccessToken still performs the same check synchronously before every
+// remote operation, so this loop only makes renewal proactive.
+func (m *Manager) StartAutoRefresh(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		m.refreshIfNeeded(ctx)
+		ticker := time.NewTicker(autoRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.refreshIfNeeded(ctx)
+			}
+		}
+	}()
+}
+
+func (m *Manager) refreshIfNeeded(ctx context.Context) {
+	if !m.tokenNeedsRefresh() {
+		return
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, autoRefreshTimeout)
+	defer cancel()
+	_, _ = m.AccessToken(refreshCtx)
 }
 
 func (m *Manager) StartLogin() (LoginStart, error) {
@@ -913,7 +980,22 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	}
 	current := *m.profile
 	m.mu.Unlock()
-	if current.ExpiresAt.After(time.Now().Add(5 * time.Minute)) {
+	if current.ExpiresAt.After(time.Now().Add(tokenRefreshWindow)) {
+		return current.AccessToken, nil
+	}
+
+	// Status polling and an acquisition can reach this path concurrently. A
+	// single refresh avoids rotating the same refresh token twice.
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	m.mu.Lock()
+	if m.profile == nil || m.profile.AccessToken == "" {
+		m.mu.Unlock()
+		return "", errors.New("阿里云盘尚未登录")
+	}
+	current = *m.profile
+	m.mu.Unlock()
+	if current.ExpiresAt.After(time.Now().Add(tokenRefreshWindow)) {
 		return current.AccessToken, nil
 	}
 

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"video-semantic-search/internal/acquisition"
 	"video-semantic-search/internal/alipan"
@@ -49,10 +50,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/media", s.handleMediaCollection)
+	mux.HandleFunc("/v1/media/embeddings/rebuild", s.handleEmbeddingRebuildBatch)
+	mux.HandleFunc("/v1/media/batch/delete", s.handleMediaBatchDelete)
 	mux.HandleFunc("/v1/media/", s.handleMediaByID)
+	mux.HandleFunc("/v1/files/inspect", s.handleFileInspect)
 	mux.HandleFunc("/v1/files/validate", s.handleFileValidation)
 	mux.HandleFunc("/v1/files/scan", s.handleFileScan)
 	mux.HandleFunc("/v1/acquisitions", s.handleAcquisitionCollection)
+	mux.HandleFunc("/v1/acquisitions/batch", s.handleAcquisitionBatch)
+	mux.HandleFunc("/v1/acquisitions/batch/stop", s.handleAcquisitionBatchStop)
+	mux.HandleFunc("/v1/acquisitions/batch/delete", s.handleAcquisitionBatchDelete)
+	mux.HandleFunc("/v1/acquisitions/clear", s.handleAcquisitionClear)
 	mux.HandleFunc("/v1/acquisitions/", s.handleAcquisitionByID)
 	mux.HandleFunc("/v1/connectors/alipan/status", s.handleAlipanStatus)
 	mux.HandleFunc("/v1/connectors/alipan/files", s.handleAlipanFiles)
@@ -139,6 +147,10 @@ func (s *Server) handleMediaByID(response http.ResponseWriter, request *http.Req
 		s.handleSceneDelete(response, parts[0], parts[2])
 		return
 	}
+	if len(parts) == 3 && parts[1] == "embeddings" && parts[2] == "rebuild" && request.Method == http.MethodPost {
+		s.handleEmbeddingRebuild(response, request, parts[0])
+		return
+	}
 	mediaID, err := url.PathUnescape(path)
 	if err != nil || mediaID == "" || strings.Contains(mediaID, "/") {
 		http.NotFound(response, request)
@@ -153,24 +165,188 @@ func (s *Server) handleMediaByID(response http.ResponseWriter, request *http.Req
 		}
 		writeJSON(response, http.StatusOK, media)
 	case http.MethodDelete:
-		if _, ok := s.store.GetMedia(mediaID); !ok {
-			writeError(response, http.StatusNotFound, fmt.Errorf("media not found"))
-			return
-		}
-		if !s.store.DeleteMedia(mediaID) {
-			writeError(response, http.StatusNotFound, fmt.Errorf("media not found"))
-			return
-		}
-		if frameDir, ok := safeFrameDir(s.frameRoot, mediaID); ok {
-			if err := os.RemoveAll(frameDir); err != nil {
-				writeError(response, http.StatusInternalServerError, fmt.Errorf("remove media frames: %w", err))
-				return
+		if err := s.deleteMedia(mediaID); err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "media not found") {
+				status = http.StatusNotFound
 			}
+			writeError(response, status, err)
+			return
 		}
 		response.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(response)
 	}
+}
+
+type embeddingRebuildRequest struct {
+	Profile string `json:"profile,omitempty"`
+}
+
+type embeddingRebuildBatchRequest struct {
+	MediaIDs []string `json:"media_ids"`
+	Profile  string   `json:"profile,omitempty"`
+}
+
+type embeddingRebuildBatchResponse struct {
+	Tasks    []acquisition.Task        `json:"tasks"`
+	Failures []embeddingRebuildFailure `json:"failures,omitempty"`
+}
+
+type mediaBatchDeleteRequest struct {
+	MediaIDs []string `json:"media_ids"`
+}
+
+type mediaBatchDeleteResponse struct {
+	Deleted  []string             `json:"deleted"`
+	Failures []mediaDeleteFailure `json:"failures,omitempty"`
+}
+
+type mediaDeleteFailure struct {
+	MediaID string `json:"media_id,omitempty"`
+	Error   string `json:"error"`
+}
+
+func (s *Server) handleMediaBatchDelete(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var batchRequest mediaBatchDeleteRequest
+	if err := decodeJSON(response, request, &batchRequest); err != nil {
+		return
+	}
+	if len(batchRequest.MediaIDs) == 0 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("media_ids must contain at least one media id"))
+		return
+	}
+	if len(batchRequest.MediaIDs) > 1000 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("media_ids cannot contain more than 1000 items"))
+		return
+	}
+
+	result := mediaBatchDeleteResponse{Deleted: []string{}}
+	seen := make(map[string]struct{}, len(batchRequest.MediaIDs))
+	for _, rawMediaID := range batchRequest.MediaIDs {
+		mediaID := strings.TrimSpace(rawMediaID)
+		if mediaID == "" {
+			result.Failures = append(result.Failures, mediaDeleteFailure{Error: "media_id is required"})
+			continue
+		}
+		if _, exists := seen[mediaID]; exists {
+			continue
+		}
+		seen[mediaID] = struct{}{}
+		if err := s.deleteMedia(mediaID); err != nil {
+			result.Failures = append(result.Failures, mediaDeleteFailure{MediaID: mediaID, Error: err.Error()})
+			continue
+		}
+		result.Deleted = append(result.Deleted, mediaID)
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) deleteMedia(mediaID string) error {
+	if _, ok := s.store.GetMedia(mediaID); !ok {
+		return fmt.Errorf("media not found")
+	}
+	if !s.store.DeleteMedia(mediaID) {
+		return fmt.Errorf("delete media index failed")
+	}
+	if frameDir, ok := safeFrameDir(s.frameRoot, mediaID); ok {
+		if err := os.RemoveAll(frameDir); err != nil {
+			return fmt.Errorf("remove media frames: %w", err)
+		}
+	}
+	return nil
+}
+
+type embeddingRebuildFailure struct {
+	MediaID string `json:"media_id"`
+	Error   string `json:"error"`
+}
+
+func (s *Server) handleEmbeddingRebuildBatch(response http.ResponseWriter, request *http.Request) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var batchRequest embeddingRebuildBatchRequest
+	if err := decodeJSON(response, request, &batchRequest); err != nil {
+		return
+	}
+	if len(batchRequest.MediaIDs) == 0 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("media_ids must contain at least one media id"))
+		return
+	}
+	if len(batchRequest.MediaIDs) > 1000 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("media_ids cannot contain more than 1000 items"))
+		return
+	}
+	profile := embedding.ImageProfileOriginal
+	if strings.TrimSpace(batchRequest.Profile) != "" {
+		profile = embedding.ImageProfile(strings.ToLower(strings.TrimSpace(batchRequest.Profile)))
+	}
+	if profile != embedding.ImageProfileOriginal && profile != embedding.ImageProfileCompressed {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("unsupported image profile %q", profile))
+		return
+	}
+	result := embeddingRebuildBatchResponse{Tasks: []acquisition.Task{}}
+	seen := make(map[string]struct{}, len(batchRequest.MediaIDs))
+	for _, rawMediaID := range batchRequest.MediaIDs {
+		mediaID := strings.TrimSpace(rawMediaID)
+		if mediaID == "" {
+			result.Failures = append(result.Failures, embeddingRebuildFailure{Error: "media_id is required"})
+			continue
+		}
+		if _, exists := seen[mediaID]; exists {
+			continue
+		}
+		seen[mediaID] = struct{}{}
+		task, err := s.jobs.RebuildEmbeddings(mediaID, profile)
+		if err != nil {
+			result.Failures = append(result.Failures, embeddingRebuildFailure{MediaID: mediaID, Error: err.Error()})
+			continue
+		}
+		result.Tasks = append(result.Tasks, task)
+	}
+	writeJSON(response, http.StatusAccepted, result)
+}
+
+func (s *Server) handleEmbeddingRebuild(response http.ResponseWriter, request *http.Request, rawMediaID string) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	mediaID, err := url.PathUnescape(rawMediaID)
+	if err != nil || mediaID == "" || strings.Contains(mediaID, "/") {
+		writeError(response, http.StatusNotFound, fmt.Errorf("media not found"))
+		return
+	}
+	profile := embedding.ImageProfileOriginal
+	if request.ContentLength != 0 {
+		var rebuildRequest embeddingRebuildRequest
+		if err := decodeJSON(response, request, &rebuildRequest); err != nil {
+			return
+		}
+		if strings.TrimSpace(rebuildRequest.Profile) != "" {
+			profile = embedding.ImageProfile(strings.ToLower(strings.TrimSpace(rebuildRequest.Profile)))
+		}
+	}
+	task, err := s.jobs.RebuildEmbeddings(mediaID, profile)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(response, status, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, task)
 }
 
 func (s *Server) handleSceneDelete(response http.ResponseWriter, rawMediaID, rawSceneID string) {
@@ -280,6 +456,204 @@ func (s *Server) handleAcquisitionCollection(response http.ResponseWriter, reque
 	}
 }
 
+type acquisitionBatchRequest struct {
+	Items []acquisition.Request `json:"items"`
+}
+
+type acquisitionBatchFailure struct {
+	Index      int    `json:"index"`
+	SourceName string `json:"source_name,omitempty"`
+	Error      string `json:"error"`
+}
+
+type acquisitionBatchResponse struct {
+	Tasks    []acquisition.Task        `json:"tasks"`
+	Failures []acquisitionBatchFailure `json:"failures,omitempty"`
+}
+
+// handleAcquisitionBatch creates many tasks in one round trip. Submissions no
+// longer read file contents, so this stays cheap even for hundreds of files;
+// the concurrency limit only protects the filesystem walk of validation.
+func (s *Server) handleAcquisitionBatch(response http.ResponseWriter, request *http.Request) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var batchRequest acquisitionBatchRequest
+	if err := decodeJSON(response, request, &batchRequest); err != nil {
+		return
+	}
+	if len(batchRequest.Items) == 0 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("items must contain at least one acquisition request"))
+		return
+	}
+	const batchConcurrency = 4
+	results := make([]acquisition.Task, len(batchRequest.Items))
+	failures := make(map[int]acquisitionBatchFailure)
+	semaphore := make(chan struct{}, batchConcurrency)
+	var waitGroup sync.WaitGroup
+	var mu sync.Mutex
+	for index, item := range batchRequest.Items {
+		waitGroup.Add(1)
+		semaphore <- struct{}{}
+		go func(index int, item acquisition.Request) {
+			defer waitGroup.Done()
+			defer func() { <-semaphore }()
+			task, err := s.jobs.SubmitContext(request.Context(), item)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failures[index] = acquisitionBatchFailure{Index: index, SourceName: item.SourceName, Error: err.Error()}
+				return
+			}
+			results[index] = task
+		}(index, item)
+	}
+	waitGroup.Wait()
+	tasks := make([]acquisition.Task, 0, len(results))
+	for _, task := range results {
+		if task.ID != "" {
+			tasks = append(tasks, task)
+		}
+	}
+	failureList := make([]acquisitionBatchFailure, 0, len(failures))
+	for index := 0; index < len(batchRequest.Items); index++ {
+		if failure, ok := failures[index]; ok {
+			failureList = append(failureList, failure)
+		}
+	}
+	writeJSON(response, http.StatusAccepted, acquisitionBatchResponse{Tasks: tasks, Failures: failureList})
+}
+
+type acquisitionClearRequest struct {
+	States []string `json:"states"`
+}
+
+type acquisitionTaskBatchRequest struct {
+	TaskIDs []string `json:"task_ids"`
+}
+
+type acquisitionTaskBatchFailure struct {
+	TaskID string `json:"task_id"`
+	Error  string `json:"error"`
+}
+
+type acquisitionTaskBatchResponse struct {
+	Stopped  []string                      `json:"stopped,omitempty"`
+	Removed  []string                      `json:"removed,omitempty"`
+	Failures []acquisitionTaskBatchFailure `json:"failures,omitempty"`
+}
+
+func (s *Server) handleAcquisitionBatchStop(response http.ResponseWriter, request *http.Request) {
+	s.handleAcquisitionBatchTaskOperation(response, request, true)
+}
+
+func (s *Server) handleAcquisitionBatchDelete(response http.ResponseWriter, request *http.Request) {
+	s.handleAcquisitionBatchTaskOperation(response, request, false)
+}
+
+func (s *Server) handleAcquisitionBatchTaskOperation(response http.ResponseWriter, request *http.Request, stop bool) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var payload acquisitionTaskBatchRequest
+	if err := decodeJSON(response, request, &payload); err != nil {
+		return
+	}
+	if len(payload.TaskIDs) == 0 || len(payload.TaskIDs) > 500 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("task_ids must contain between 1 and 500 items"))
+		return
+	}
+	taskIDs := uniqueTaskIDs(payload.TaskIDs)
+	if len(taskIDs) == 0 {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("task_ids must contain at least one non-empty task id"))
+		return
+	}
+	result := acquisitionTaskBatchResponse{}
+	if stop {
+		result.Stopped = s.jobs.StopMany(taskIDs)
+	} else {
+		result.Removed = s.jobs.RemoveMany(taskIDs)
+	}
+	stopped := make(map[string]struct{}, len(result.Stopped))
+	for _, taskID := range result.Stopped {
+		stopped[taskID] = struct{}{}
+	}
+	removed := make(map[string]struct{}, len(result.Removed))
+	for _, taskID := range result.Removed {
+		removed[taskID] = struct{}{}
+	}
+	for _, taskID := range taskIDs {
+		if _, ok := stopped[taskID]; ok {
+			continue
+		}
+		if _, ok := removed[taskID]; ok {
+			continue
+		}
+		task, exists := s.jobs.Get(taskID)
+		if !exists {
+			result.Failures = append(result.Failures, acquisitionTaskBatchFailure{TaskID: taskID, Error: "任务不存在"})
+			continue
+		}
+		if stop {
+			result.Failures = append(result.Failures, acquisitionTaskBatchFailure{TaskID: taskID, Error: fmt.Sprintf("任务已处于%s状态", task.State)})
+			continue
+		}
+		result.Failures = append(result.Failures, acquisitionTaskBatchFailure{TaskID: taskID, Error: "任务仍在处理，请先停止"})
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func uniqueTaskIDs(taskIDs []string) []string {
+	result := make([]string, 0, len(taskIDs))
+	seen := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" {
+			continue
+		}
+		if _, exists := seen[taskID]; exists {
+			continue
+		}
+		seen[taskID] = struct{}{}
+		result = append(result, taskID)
+	}
+	return result
+}
+
+// handleAcquisitionClear deletes terminal task records. By default only
+// failed and canceled tasks are removed, so completed history survives.
+func (s *Server) handleAcquisitionClear(response http.ResponseWriter, request *http.Request) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	states := []string{"failed", "canceled"}
+	if request.ContentLength != 0 {
+		var clearRequest acquisitionClearRequest
+		if err := decodeJSON(response, request, &clearRequest); err != nil {
+			return
+		}
+		if len(clearRequest.States) > 0 {
+			states = clearRequest.States
+		}
+	}
+	writeJSON(response, http.StatusOK, map[string]int{"removed": s.jobs.Clear(states)})
+}
+
 func (s *Server) handleAcquisitionByID(response http.ResponseWriter, request *http.Request) {
 	if s.jobs == nil {
 		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
@@ -300,12 +674,16 @@ func (s *Server) handleAcquisitionByID(response http.ResponseWriter, request *ht
 		writeJSON(response, http.StatusOK, task)
 	case http.MethodDelete:
 		if _, ok := s.jobs.Stop(taskID); !ok {
-			if _, exists := s.jobs.Get(taskID); !exists {
-				writeError(response, http.StatusNotFound, fmt.Errorf("acquisition task not found"))
+			// Terminal tasks cannot be stopped, but they can be removed from
+			// the list so the queue view stays readable.
+			if !s.jobs.Remove(taskID) {
+				if _, exists := s.jobs.Get(taskID); !exists {
+					writeError(response, http.StatusNotFound, fmt.Errorf("acquisition task not found"))
+					return
+				}
+				writeError(response, http.StatusConflict, fmt.Errorf("acquisition task is still running, stop it first"))
 				return
 			}
-			writeError(response, http.StatusConflict, fmt.Errorf("acquisition task is already finished"))
-			return
 		}
 		response.WriteHeader(http.StatusNoContent)
 	default:
@@ -322,7 +700,7 @@ func (s *Server) handleAlipanStatus(response http.ResponseWriter, request *http.
 		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("阿里云盘 connector 未配置"))
 		return
 	}
-	writeJSON(response, http.StatusOK, s.alipan.Status())
+	writeJSON(response, http.StatusOK, s.alipan.StatusContext(request.Context()))
 }
 
 func (s *Server) handleAlipanFiles(response http.ResponseWriter, request *http.Request) {
@@ -505,12 +883,79 @@ type fileScanRequest struct {
 	Recursive bool   `json:"recursive,omitempty"`
 }
 
+type fileInspectRequest struct {
+	Path string `json:"path"`
+}
+
+type fileInspection struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Available bool   `json:"available"`
+	Size      int64  `json:"size,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 type fileValidation struct {
 	Path      string `json:"path"`
 	Name      string `json:"name"`
 	Available bool   `json:"available"`
 	Size      int64  `json:"size,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) handleFileInspect(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	var payload fileInspectRequest
+	if err := decodeJSON(response, request, &payload); err != nil {
+		return
+	}
+	if strings.TrimSpace(payload.Path) == "" {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("path is required"))
+		return
+	}
+	writeJSON(response, http.StatusOK, inspectSource(payload.Path))
+}
+
+func inspectSource(candidate string) fileInspection {
+	trimmed := acquisition.NormalizeLocalPath(candidate)
+	result := fileInspection{Path: trimmed, Name: filepath.Base(trimmed)}
+	if trimmed == "" {
+		result.Error = "path is required"
+		return result
+	}
+	path, err := filepath.Abs(trimmed)
+	if err != nil {
+		result.Error = fmt.Sprintf("resolve path: %v", err)
+		return result
+	}
+	result.Path = path
+	result.Name = filepath.Base(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if info.IsDir() {
+		result.Kind = "directory"
+		result.Available = true
+		return result
+	}
+	result.Kind = "file"
+	if !info.Mode().IsRegular() {
+		result.Error = "path must be a regular file"
+		return result
+	}
+	result.Size = info.Size()
+	if info.Size() == 0 {
+		result.Error = "file is empty"
+		return result
+	}
+	result.Available = true
+	return result
 }
 
 func (s *Server) handleFileValidation(response http.ResponseWriter, request *http.Request) {
@@ -542,8 +987,9 @@ func (s *Server) handleFileScan(response http.ResponseWriter, request *http.Requ
 	if err := decodeJSON(response, request, &payload); err != nil {
 		return
 	}
-	directory, err := filepath.Abs(strings.TrimSpace(payload.Directory))
-	if err != nil || strings.TrimSpace(payload.Directory) == "" {
+	normalizedDirectory := acquisition.NormalizeLocalPath(payload.Directory)
+	directory, err := filepath.Abs(normalizedDirectory)
+	if err != nil || strings.TrimSpace(normalizedDirectory) == "" {
 		writeError(response, http.StatusBadRequest, fmt.Errorf("directory is required"))
 		return
 	}
@@ -569,7 +1015,7 @@ func (s *Server) handleFileScan(response http.ResponseWriter, request *http.Requ
 }
 
 func inspectFile(candidate string) fileValidation {
-	trimmed := strings.TrimSpace(candidate)
+	trimmed := acquisition.NormalizeLocalPath(candidate)
 	result := fileValidation{Path: trimmed, Name: filepath.Base(trimmed)}
 	path, err := (acquisition.Request{LocalPath: trimmed}).Validate()
 	if err != nil {
