@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -969,16 +970,68 @@ func (i *matroskaIndex) scanClusterKeyframe(ctx context.Context, cluster matrosk
 	return 0, fmt.Errorf("Matroska cluster at %d has no keyframe inside %d bytes", cluster.offset, matroskaClusterScanBytes)
 }
 
+// nalLength returns the NAL unit length prefix size in bytes. The declared
+// value can be wrong in the wild, so it is corrected at runtime when a block
+// proves otherwise.
+func (i *matroskaIndex) nalLength() int {
+	if i == nil {
+		return 0
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.NALLength
+}
+
+func (i *matroskaIndex) setNALLength(length int) {
+	i.mu.Lock()
+	i.NALLength = length
+	i.mu.Unlock()
+}
+
 // elementary converts one Matroska block into a stream FFmpeg can decode on its
 // own.
 func (i *matroskaIndex) elementary(block []byte) ([]byte, error) {
 	switch i.Codec {
 	case "h264", "hevc":
-		converted, err := mp4SampleToAnnexB(block, i.Config, i.NALLength)
-		if err != nil {
-			return nil, fmt.Errorf("convert Matroska %s block: %w", i.Codec, err)
+		length := i.nalLength()
+		converted, err := mp4SampleToAnnexB(block, i.Config, length)
+		if err == nil {
+			return converted, nil
 		}
-		return converted, nil
+		// Broken remuxes are common in the wild: some declare a different NAL
+		// length width than they store, and some (notably certain CMCT releases)
+		// drop a byte of the first length prefix, shifting every later read into
+		// absurd sizes. Try the plausible repairs before giving up; every
+		// candidate must consume the whole sample exactly, so a coincidental
+		// match is effectively impossible.
+		type repair struct {
+			length int
+			prefix []byte
+		}
+		candidates := []repair{
+			{3, nil}, {2, nil},
+			{4, []byte{0x00}}, {3, []byte{0x00}},
+		}
+		for _, candidate := range candidates {
+			if candidate.length == length && candidate.prefix == nil {
+				continue
+			}
+			sample := block
+			if candidate.prefix != nil {
+				sample = append(append([]byte(nil), candidate.prefix...), block...)
+			}
+			repaired, repairErr := mp4SampleToAnnexB(sample, i.Config, candidate.length)
+			if repairErr == nil {
+				if candidate.prefix == nil {
+					log.Printf("Matroska %s blocks use %d-byte NAL lengths despite declaring %d bytes; adjusting", i.Codec, candidate.length, length)
+					i.setNALLength(candidate.length)
+				} else {
+					log.Printf("Matroska %s block lost a byte of its first NAL length prefix; repaired with a restored zero byte", i.Codec)
+				}
+				return repaired, nil
+			}
+		}
+		return nil, fmt.Errorf("convert Matroska %s block: %w", i.Codec, err)
 	case "vp8", "vp9", "av1":
 		return i.wrapIVF(block)
 	default:

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -261,6 +262,7 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 				MP4MoovWorkers:   p.RemoteMoovWorkers,
 			})
 			if indexErr == nil {
+				log.Printf("remote container index built: %T (cache=%s)", indexed, remoteIndexCacheState)
 				candidate := indexed.info()
 				if candidate.Duration > 0 && candidate.Width > 0 && candidate.Height > 0 {
 					remoteIndex = indexed
@@ -277,6 +279,7 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 			if indexErr != nil {
 				// The generic FFmpeg range proxy remains the fallback for
 				// fragmented, unusual, or damaged containers.
+				log.Printf("remote container index unavailable: %v", indexErr)
 				report(Progress{Stage: StageParsing, Percent: 0.14, Message: fmt.Sprintf("容器索引不可用（%v），切换为 FFmpeg 通用远程读取", indexErr)})
 			}
 		}
@@ -1049,10 +1052,12 @@ func (p *VideoProcessor) extractFrameFromIndexedSampleWithSource(ctx context.Con
 	// An index without a supported elementary demuxer is still useful as a seek
 	// anchor, so this reports "not handled" instead of failing.
 	if index == nil || index.demuxer() == "" {
+		log.Printf("frame extraction: 容器索引无法直接解码采样 (codec=%s)，退回 FFmpeg seek 路径", index.info().Codec)
 		return false, frameExtractionSource{}, nil
 	}
 	sample, payload, err := index.readKeyframe(ctx, timestamp)
 	if err != nil {
+		log.Printf("frame extraction: %.3fs 索引采样失败: %v", timestamp, err)
 		return true, frameExtractionSource{}, err
 	}
 	sourceInfo := frameExtractionSource{

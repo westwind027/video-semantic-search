@@ -1,6 +1,7 @@
 package acquisition
 
 import (
+	"bytes"
 	"context"
 	"math"
 	"os"
@@ -463,5 +464,37 @@ func TestExtractFrameFromIndexedMatroskaSample(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMatroskaElementaryRepairsDroppedLengthPrefixByte(t *testing.T) {
+	// Simulates the broken CMCT layout: a 4-byte AVCC block whose first NAL
+	// length prefix lost one leading zero byte, so standard parsing reads an
+	// absurd size while the remaining prefixes stay well-formed.
+	sps := []byte{0x67, 0x64, 0x00, 0x29}
+	pps := []byte{0x68, 0xe8, 0x01}
+	idr := []byte{0x65, 0x01, 0x02, 0x03}
+	block := []byte{}
+	block = append(block, 0x00, 0x00, byte(len(sps))) // 3-byte (broken) prefix
+	block = append(block, sps...)
+	block = append(block, 0x00, 0x00, 0x00, byte(len(pps))) // standard 4-byte prefix
+	block = append(block, pps...)
+	block = append(block, 0x00, 0x00, 0x00, byte(len(idr))) // standard 4-byte prefix
+	block = append(block, idr...)
+
+	index := &matroskaIndex{Codec: "h264", CodecID: "V_MPEG4/ISO/AVC", NALLength: 4, Config: [][]byte{sps, pps}}
+	got, err := index.elementary(block)
+	if err != nil {
+		t.Fatalf("elementary: %v", err)
+	}
+	// mp4SampleToAnnexB always prepends the configuration NALUs, so the
+	// in-band SPS/PPS of the block appear twice; that is harmless for decode.
+	want := []byte{}
+	for _, nalu := range [][]byte{sps, pps, sps, pps, idr} {
+		want = append(want, 0, 0, 0, 1)
+		want = append(want, nalu...)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("repaired sample = %x, want %x", got, want)
 	}
 }
