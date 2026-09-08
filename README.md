@@ -129,7 +129,7 @@ VIDEO_FAST_MODE=true VIDEO_FRAME_WORKERS=8 \
 
 上传弹窗直接输入 Go 服务所在机器上的文件或目录路径，不依赖浏览器文件选择器。输入 `E:\\Movies\\movie.mp4`、`E:/Movies/movie.mp4` 或 `/mnt/e/Movies/movie.mp4` 后点击“检查路径”；文件会直接加入待处理列表，目录则显示“扫描目录”和递归选项。服务端会将 Windows 路径转换为 WSL 路径，原视频不会上传或复制。
 
-页面默认勾选快速模式。采集任务由后台 worker 池顺序执行，默认同时处理 2 个任务，可用 `VIDEO_TASK_WORKERS` 调整；排队中的任务可随时取消，失败或已取消的记录可在页面上批量清理。快速模式按 `sample_interval` 均匀采样，最多 32 个画面；关键帧采样/准确模式最多 240 个画面。采样间隔越小，画面越密集、抽帧和 embedding 耗时越长。如果要完整检测每个静态切镜，取消页面勾选并使用准确模式，但耗时会随视频时长增长。
+页面默认勾选快速模式。采集任务由后台 worker 池顺序执行，默认同时处理 2 个任务，可用 `VIDEO_TASK_WORKERS` 调整；排队中的任务可随时取消，失败或已取消的记录可在页面上批量清理。本地大文件被 worker 领取后会立即显示“计算文件指纹”，不会继续伪装成排队；SHA-256 读取与 IMDb/TMDB/人脸库准备并行执行。快速模式按 `sample_interval` 均匀采样，最多 32 个画面；关键帧采样/准确模式最多 240 个画面。采样间隔越小，画面越密集、抽帧和 embedding 耗时越长。如果要完整检测每个静态切镜，取消页面勾选并使用准确模式，但耗时会随视频时长增长。
 
 右上角的云盘图标用于阿里云盘账户接入。若没有个人 OpenAPI 应用凭据，默认使用 tickstep 的扫码登录链路：服务端生成二维码并轮询登录状态，access token 只写入服务端本地文件。若你有自己的 OpenAPI 应用，也可以显式设置 `ALIYUNPAN_LOGIN_MODE=official`，使用官方 OAuth 的 `oob` 授权码流程。环境变量写在 `.env` 时，启动前先执行 `set -a; source .env; set +a`：
 
@@ -245,8 +245,9 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
 - `DELETE /v1/media/{media_id}`：删除媒体及其场景索引。
 - `POST /v1/media/batch/delete`：批量删除选中的媒体、关键帧及其向量，body 为 `{"media_ids":["..."]}`。
-- `POST /v1/acquisitions`：提交服务端本地视频路径，任务立即入队（`queued`）返回，不读取文件内容；由后台 worker 领取后先执行 IMDb/TMDB/人脸库准备，再处理视频。
+- `POST /v1/acquisitions`：提交服务端本地视频路径，任务立即入队（`queued`）返回，不读取文件内容；由后台 worker 领取后执行 IMDb/TMDB/人脸库准备和本地指纹计算，再处理视频（两者可并行）。
 - `POST /v1/acquisitions/batch`：单次请求批量入队多个采集任务，逐条返回创建结果与失败原因；不会等待 TMDB 或人脸库准备。
+- `GET /v1/acquisitions/events`：SSE 任务事件流，连接时发送完整快照，之后推送创建、进度、完成、失败、停止和删除事件；前端断线时保留低频 HTTP 刷新兜底。
 - `GET /v1/acquisitions`、`GET /v1/acquisitions/{task_id}`：查看采集任务。
 - `DELETE /v1/acquisitions/{task_id}`：取消排队/运行中的任务；终态任务则移除记录。
 - `POST /v1/acquisitions/batch/stop`：批量停止选中的排队/运行任务，body 为 `{"task_ids":["..."]}`。

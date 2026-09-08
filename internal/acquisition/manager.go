@@ -47,6 +47,8 @@ type queuedJob struct {
 	cancel       context.CancelFunc
 }
 
+type fileHashFunc func(context.Context, string) (string, error)
+
 type Task struct {
 	ID                 string       `json:"id"`
 	State              string       `json:"state"`
@@ -85,6 +87,8 @@ type Manager struct {
 	tasks       map[string]Task
 	cancel      map[string]context.CancelFunc
 	queue       chan queuedJob
+	subscribers map[chan TaskEvent]struct{}
+	hasher      fileHashFunc
 	lastPersist time.Time
 }
 
@@ -126,13 +130,15 @@ func NewManagerWithTaskFile(processor Processor, engine *search.Engine, taskFile
 func newManager(processor Processor, engine *search.Engine, taskFile string) *Manager {
 	workers := taskWorkersFromEnv()
 	manager := &Manager{
-		processor: processor,
-		engine:    engine,
-		taskFile:  taskFile,
-		workers:   workers,
-		tasks:     make(map[string]Task),
-		cancel:    make(map[string]context.CancelFunc),
-		queue:     make(chan queuedJob, taskQueueCapacity),
+		processor:   processor,
+		engine:      engine,
+		taskFile:    taskFile,
+		workers:     workers,
+		tasks:       make(map[string]Task),
+		cancel:      make(map[string]context.CancelFunc),
+		queue:       make(chan queuedJob, taskQueueCapacity),
+		subscribers: make(map[chan TaskEvent]struct{}),
+		hasher:      hashFile,
 	}
 	for i := 0; i < workers; i++ {
 		go manager.worker()
@@ -213,6 +219,7 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 			duplicate := duplicateTask(media, request, contentFingerprint, now)
 			m.tasks[duplicate.ID] = duplicate
 			m.persistLocked(true)
+			m.publishTaskLocked(duplicate)
 			m.mu.Unlock()
 			return duplicate, nil
 		}
@@ -226,6 +233,7 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 	m.persistLocked(true)
 	select {
 	case m.queue <- queuedJob{kind: jobKindAcquisition, taskID: task.ID, request: request, ctx: workContext, cancel: cancel}:
+		m.publishTaskLocked(task)
 	default:
 		delete(m.tasks, task.ID)
 		delete(m.cancel, task.ID)
@@ -294,6 +302,7 @@ func (m *Manager) RebuildEmbeddings(mediaID string, profile embedding.ImageProfi
 	m.persistLocked(true)
 	select {
 	case m.queue <- queuedJob{kind: jobKindRebuild, taskID: task.ID, mediaID: mediaID, imageProfile: profile, ctx: workContext, cancel: cancel}:
+		m.publishTaskLocked(task)
 	default:
 		delete(m.tasks, task.ID)
 		delete(m.cancel, task.ID)
@@ -345,6 +354,7 @@ func (m *Manager) RebuildPersons(mediaID string) (Task, error) {
 	m.persistLocked(true)
 	select {
 	case m.queue <- queuedJob{kind: jobKindIdentity, taskID: taskID, mediaID: mediaID, ctx: workContext, cancel: cancel, identity: true}:
+		m.publishTaskLocked(task)
 	default:
 		delete(m.tasks, taskID)
 		delete(m.cancel, taskID)
@@ -366,8 +376,13 @@ func (m *Manager) Get(taskID string) (Task, bool) {
 func (m *Manager) List() []Task {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.listLocked()
+}
+
+func (m *Manager) listLocked() []Task {
 	result := make([]Task, 0, len(m.tasks))
 	for _, task := range m.tasks {
+		task.Media = nil
 		result = append(result, task)
 	}
 	sort.SliceStable(result, func(left, right int) bool { return result[left].UpdatedAt.After(result[right].UpdatedAt) })
@@ -390,6 +405,7 @@ func (m *Manager) Stop(taskID string) (Task, bool) {
 	task.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = task
 	m.persistLocked(true)
+	m.publishTaskLocked(task)
 	return task, true
 }
 
@@ -424,6 +440,7 @@ func (m *Manager) StopMany(taskIDs []string) []string {
 		task.Message = "任务已停止"
 		task.UpdatedAt = now
 		m.tasks[taskID] = task
+		m.publishTaskLocked(task)
 		stopped = append(stopped, taskID)
 	}
 	if len(stopped) > 0 {
@@ -516,6 +533,7 @@ func (m *Manager) runIdentityRebuild(taskID, mediaID string, workContext context
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 	}
 	m.mu.Unlock()
 }
@@ -553,6 +571,7 @@ func (m *Manager) runRebuild(taskID, mediaID string, profile embedding.ImageProf
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 	}
 	m.mu.Unlock()
 }
@@ -562,7 +581,42 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 	// submission: submitting a batch must not wait on reading every file, so
 	// the worker pays for hashing once, right before processing starts.
 	if !request.IsRemote() {
-		digest, err := hashFile(workContext, request.LocalPath)
+		// Claim the task before touching the whole file. Without this update a
+		// multi-gigabyte local file remains visually queued while the worker is
+		// already busy reading it.
+		m.update(taskID, Progress{Stage: StageHashing, Percent: 0.005, Message: "正在计算文件指纹"})
+
+		// Metadata preparation does not depend on the local file bytes. Run it
+		// alongside hashing so TMDB/Identity I/O can overlap the disk read. The
+		// hash result is still required before deduplication or video processing.
+		hashContext, cancelHash := context.WithCancel(workContext)
+		hashResult := make(chan struct {
+			digest string
+			err    error
+		}, 1)
+		go func() {
+			hasher := m.hasher
+			if hasher == nil {
+				hasher = hashFile
+			}
+			digest, err := hasher(hashContext, request.LocalPath)
+			hashResult <- struct {
+				digest string
+				err    error
+			}{digest: digest, err: err}
+		}()
+
+		prepareErr := m.prepareMovie(taskID, &request, workContext)
+		if prepareErr != nil {
+			cancelHash()
+			if workContext.Err() == nil {
+				m.fail(taskID, prepareErr)
+			}
+			return
+		}
+		result := <-hashResult
+		cancelHash()
+		digest, err := result.digest, result.err
 		if err != nil {
 			if workContext.Err() == nil {
 				m.fail(taskID, fmt.Errorf("calculate video SHA-256: %w", err))
@@ -572,8 +626,7 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 		if m.claimFingerprint(taskID, digest, request) {
 			return
 		}
-	}
-	if err := m.prepareMovie(taskID, &request, workContext); err != nil {
+	} else if err := m.prepareMovie(taskID, &request, workContext); err != nil {
 		if workContext.Err() == nil {
 			m.fail(taskID, err)
 		}
@@ -659,6 +712,7 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 	}
 	m.mu.Unlock()
 }
@@ -706,6 +760,7 @@ func (m *Manager) prepareMovie(taskID string, request *Request, workContext cont
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 	}
 	m.mu.Unlock()
 	return nil
@@ -730,6 +785,7 @@ func (m *Manager) update(taskID string, progress Progress) {
 	task.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = task
 	m.persistLocked(false)
+	m.publishTaskLocked(task)
 }
 
 func (m *Manager) fail(taskID string, err error) {
@@ -746,6 +802,7 @@ func (m *Manager) fail(taskID string, err error) {
 	task.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = task
 	m.persistLocked(true)
+	m.publishTaskLocked(task)
 }
 
 // claimFingerprint records the computed content hash of a local task and folds
@@ -754,8 +811,8 @@ func (m *Manager) fail(taskID string, err error) {
 func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool {
 	m.mu.Lock()
 	task, ok := m.tasks[taskID]
-	if !ok || task.State != "queued" {
-		// Stopped while hashing; the state is already final.
+	if !ok || task.State == "canceled" || task.State == "failed" || task.State == "completed" {
+		// Stopped or finalized while hashing; the state is already final.
 		m.mu.Unlock()
 		return true
 	}
@@ -766,6 +823,7 @@ func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool 
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 		m.mu.Unlock()
 		return true
 	}
@@ -773,6 +831,7 @@ func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool 
 	task.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = task
 	m.persistLocked(true)
+	m.publishTaskLocked(task)
 	// Same lookup pattern as Submit: the engine has its own locking, and the
 	// tiny race window just means a duplicate is caught by the next check.
 	media, mediaFound := m.engine.FindMediaByFingerprint(digest, request.LocalPath)
@@ -783,6 +842,7 @@ func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool 
 		task.Message = "关键帧提取方式已变更，将重新提取并重建索引"
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 		m.mu.Unlock()
 		return false
 	}
@@ -796,6 +856,7 @@ func (m *Manager) claimFingerprint(taskID, digest string, request Request) bool 
 		task.UpdatedAt = time.Now().UTC()
 		m.tasks[taskID] = task
 		m.persistLocked(true)
+		m.publishTaskLocked(task)
 		m.mu.Unlock()
 		return true
 	}
@@ -830,6 +891,7 @@ func (m *Manager) Remove(taskID string) bool {
 	}
 	delete(m.tasks, taskID)
 	m.persistLocked(true)
+	m.publishTaskRemovedLocked(taskID)
 	return true
 }
 
@@ -856,6 +918,7 @@ func (m *Manager) RemoveMany(taskIDs []string) []string {
 			continue
 		}
 		delete(m.tasks, taskID)
+		m.publishTaskRemovedLocked(taskID)
 		removed = append(removed, taskID)
 	}
 	if len(removed) > 0 {
@@ -882,6 +945,7 @@ func (m *Manager) Clear(states []string) int {
 	for id, task := range m.tasks {
 		if removable[task.State] {
 			delete(m.tasks, id)
+			m.publishTaskRemovedLocked(id)
 			removed++
 		}
 	}

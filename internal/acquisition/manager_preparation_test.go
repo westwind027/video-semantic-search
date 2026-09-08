@@ -2,6 +2,7 @@ package acquisition
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -18,6 +19,22 @@ type blockingMoviePreparer struct {
 	release  chan struct{}
 	requests chan identity.MoviePreparationRequest
 	once     sync.Once
+}
+
+type blockingFileHasher struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *blockingFileHasher) Hash(ctx context.Context, _ string) (string, error) {
+	h.once.Do(func() { close(h.started) })
+	select {
+	case <-h.release:
+		return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (p *blockingMoviePreparer) Prepare(ctx context.Context, request identity.MoviePreparationRequest) (identity.MoviePreparationResult, error) {
@@ -66,4 +83,47 @@ func TestManagerSubmitsBeforeMoviePreparationRuns(t *testing.T) {
 	if current.MovieID != "movie-prepared" {
 		t.Fatalf("task movie_id = %q, want prepared movie id", current.MovieID)
 	}
+}
+
+func TestManagerStartsLocalTaskBeforeFingerprintCompletes(t *testing.T) {
+	t.Setenv("VIDEO_TASK_WORKERS", "1")
+	directory := t.TempDir()
+	videoPath := filepath.Join(directory, "movie.mp4")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	manager := NewManager(&immediateProcessor{}, search.NewEngine(index, managerEmbedder{}, false))
+	hasher := &blockingFileHasher{started: make(chan struct{}), release: make(chan struct{})}
+	manager.hasher = hasher.Hash
+	preparer := &blockingMoviePreparer{started: make(chan struct{}), release: make(chan struct{}), requests: make(chan identity.MoviePreparationRequest, 1)}
+	manager.SetMoviePreparer(preparer)
+
+	task, err := manager.Submit(Request{LocalPath: videoPath, SourceName: "Movie.2006.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-hasher.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start fingerprinting")
+	}
+	select {
+	case <-preparer.started:
+	case <-time.After(time.Second):
+		t.Fatal("movie preparation did not overlap fingerprinting")
+	}
+	current, ok := manager.Get(task.ID)
+	if !ok || current.State != "running" {
+		t.Fatalf("task while fingerprinting = %+v, want running", current)
+	}
+
+	close(preparer.release)
+	close(hasher.release)
+	waitForManagerState(t, manager, task.ID, "completed")
 }

@@ -79,6 +79,7 @@ type Stage string
 
 const (
 	StageQueued     Stage = "queued"
+	StageHashing    Stage = "hashing_content"
 	StagePreparing  Stage = "preparing_metadata"
 	StageParsing    Stage = "parsing"
 	StageDetecting  Stage = "detecting_scenes"

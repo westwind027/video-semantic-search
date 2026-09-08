@@ -11,6 +11,8 @@
 - 任务队列支持勾选、全选/反选、批量停止排队/运行任务、批量删除已完成/失败/已停止任务，以及清理全部终态记录。
 - 新增任务接口：`POST /v1/acquisitions/batch/stop`、`POST /v1/acquisitions/batch/delete`；新增路径检查接口：`POST /v1/files/inspect`。
 - 2026-09-08 已将影片准备从提交请求中解耦：本地/阿里云盘入口现在只把任务写入任务持久化文件并立即入队，worker 领取后调用与 `POST /v1/metadata/movies/prepare` 共用的 `MoviePreparationService`，再执行抽帧、人物识别和 WeMM embedding。TMDB/Identity 慢或暂时失败不会阻塞批量提交；准备失败会落为 `failed` 任务并保留具体原因，便于修复后重试。
+- 任务状态已增加 SSE 推送：`GET /v1/acquisitions/events` 连接后先发送快照，再推送增量状态变化；前端不再每 2 秒轮询任务，断线或事件缓冲溢出时由 10 秒低频刷新恢复一致状态。
+- 本地任务领取后会先切换为 `running / hashing_content` 并通过 SSE 展示“正在计算文件指纹”；完整 SHA-256 计算与 IMDb/TMDB/人脸库准备并行，避免多 GB 文件在指纹阶段长时间显示为“等待处理”。指纹仍在去重和视频处理前完成，保留内容级去重语义。
 - 已执行 `go test ./...`，全部通过；当前 `data/index.json` 持久化状态为 2 个视频、267 个画面。本次检查时 Go 服务已监听 `:8000`、WeMM 已监听 `:7001`；Identity tagging 仍按默认配置关闭，启动方式见 §4。
 
 删除任务记录只影响任务历史，不会删除原视频、关键帧或向量；批量删除接口也会拒绝仍在处理中的任务。
@@ -101,7 +103,7 @@ Go 负责 HTTP API、任务状态、来源接入、远程 Range 读取、视频�
 - 长视频 sample 时间戳由 `stts` 单次线性累加得到 64 位解码时间，既避免 mp4ff 的 32 位时间回绕，也避免逐帧调用 `GetDecodeTime` 的 O(K×E) 开销。
 - 过期的云盘签名 URL 已增加 401/403 自动刷新回调；该改动需要重新编译并用真实视频复测。
 - 阿里云盘 access token 会在到期前自动续期：官方 OAuth 使用 refresh token，tickstep 使用登录 ticket 的 refresh 接口；Go 服务后台每分钟检查，状态接口和实际云盘请求也会触发一次带并发保护的刷新。若 refresh token/ticket 已失效，状态接口会报告续期失败，需要重新登录。
-- 相同内容去重分两层：提交时远程任务按云盘文件身份/`content_hash` 同步去重；本地文件的 SHA-256 延迟到 worker 领取任务时计算，与运行中任务和已完成媒体比对后直接折叠为 `completed`（`media_id` 指向已有媒体），不会重复解析、抽帧和 embedding。
+- 相同内容去重分两层：提交时远程任务按云盘文件身份/`content_hash` 同步去重；本地文件的 SHA-256 延迟到 worker 领取任务时计算，与运行中任务和已完成媒体比对后直接折叠为 `completed`（`media_id` 指向已有媒体），不会重复解析、抽帧和 embedding。对于启用影片准备的本地任务，SHA-256 读取和元数据/人脸库准备并行；任务阶段会先报告 `hashing_content` 或 `preparing_metadata`，而不是停留在初始排队文案。
 - 采集任务采用**提交即入队**模型：`Submit` 只做参数校验并落盘任务记录，不读取文件内容（零读盘），页面可以一次性批量提交任意多个任务；`VIDEO_TASK_WORKERS` 个 worker 从队列顺序领取执行，默认 2，避免无上限并发导致 ffmpeg/embedding 互相拖垮。排队中的任务可随时取消（状态直接变为 `canceled`），不会占用 worker。
 - 页面任务栏支持批量提交（单次 HTTP 往返）、勾选后批量停止排队/运行任务、批量删除已完成/失败/已停止任务，以及一键清理所有终态记录。对应接口为 `POST /v1/acquisitions/batch/stop`、`POST /v1/acquisitions/batch/delete` 和 `POST /v1/acquisitions/clear`。
 - 上传弹窗采用左侧路径来源、右侧待处理清单、底部提交栏布局；用户输入 Windows 或 WSL 路径并点击“检查路径”，文件直接加入待处理清单，目录只登记为来源，点击“扫描目录”后才把视频加入清单，递归扫描选项位于其下方。待处理文件支持全选、反选、清除所选、单条移除，检查与“开始批量处理”固定在底部。
@@ -411,6 +413,7 @@ curl -s http://127.0.0.1:8000/v1/media/<media-id> | jq '.metadata'
 - `GET /`：搜索页面。
 - `POST /v1/acquisitions`：创建异步本地或阿里云盘采集任务，立即返回 `queued`，不读取文件内容。
 - `POST /v1/acquisitions/batch`：批量创建采集任务（202），返回 `tasks` 与按提交序号排列的 `failures`。
+- `GET /v1/acquisitions/events`：SSE 任务事件流；首条为任务快照，后续为任务更新/删除事件。
 - `GET /v1/acquisitions`、`GET /v1/acquisitions/{id}`：任务列表和详情。
 - `DELETE /v1/acquisitions/{id}`：取消未完成任务（queued/running → `canceled`）；终态任务则移除该条记录。
 - `POST /v1/acquisitions/batch/stop`：批量停止选中的 queued/running 任务，body 为 `{"task_ids":["..."]}`。

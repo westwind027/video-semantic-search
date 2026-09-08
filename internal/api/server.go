@@ -86,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/files/validate", s.handleFileValidation)
 	mux.HandleFunc("/v1/files/scan", s.handleFileScan)
 	mux.HandleFunc("/v1/acquisitions", s.handleAcquisitionCollection)
+	mux.HandleFunc("/v1/acquisitions/events", s.handleAcquisitionEvents)
 	mux.HandleFunc("/v1/acquisitions/batch", s.handleAcquisitionBatch)
 	mux.HandleFunc("/v1/acquisitions/batch/stop", s.handleAcquisitionBatchStop)
 	mux.HandleFunc("/v1/acquisitions/batch/delete", s.handleAcquisitionBatchDelete)
@@ -533,6 +534,69 @@ func (s *Server) handleAcquisitionCollection(response http.ResponseWriter, reque
 	default:
 		methodNotAllowed(response)
 	}
+}
+
+// handleAcquisitionEvents streams task snapshots and state changes to the
+// browser. The Manager publishes non-blocking events, so a disconnected or
+// slow browser cannot delay acquisition workers.
+func (s *Server) handleAcquisitionEvents(response http.ResponseWriter, request *http.Request) {
+	if s.jobs == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("acquisition manager is not configured"))
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response)
+		return
+	}
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		writeError(response, http.StatusInternalServerError, fmt.Errorf("streaming is not supported"))
+		return
+	}
+	events, tasks, unsubscribe := s.jobs.SubscribeTaskEvents()
+	defer unsubscribe()
+	response.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	response.Header().Set("Connection", "keep-alive")
+	response.Header().Set("X-Accel-Buffering", "no")
+	response.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	if err := writeAcquisitionSSE(response, flusher, acquisition.TaskEvent{Type: acquisition.TaskEventSnapshot, Tasks: tasks}); err != nil {
+		return
+	}
+
+	heartbeat := time.NewTicker(20 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case event, open := <-events:
+			if !open {
+				return
+			}
+			if err := writeAcquisitionSSE(response, flusher, event); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := io.WriteString(response, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func writeAcquisitionSSE(response http.ResponseWriter, flusher http.Flusher, event acquisition.TaskEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(response, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 type acquisitionBatchRequest struct {
