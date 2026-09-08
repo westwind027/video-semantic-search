@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"video-semantic-search/internal/model"
@@ -30,9 +31,12 @@ type SceneDocument struct {
 }
 
 type Filter struct {
-	Type     string
-	Year     *int
-	Language string
+	MediaID   string
+	Type      string
+	Year      *int
+	Language  string
+	PersonID  string
+	PersonIDs []string
 }
 
 type IndexStore interface {
@@ -50,6 +54,24 @@ type IndexStore interface {
 // implement this capability.
 type SceneDeleter interface {
 	DeleteScene(string, string) (model.Scene, bool)
+}
+
+// ScenePeopleStore is the optional identity-management seam. It keeps face
+// tags independent from the vector backend while allowing the current JSON
+// store to persist them alongside each scene.
+type ScenePeopleStore interface {
+	UpdateScenePeople(string, string, []string) error
+}
+
+// ScenePeopleBatchStore is an optional write path for identity rebuilds. A
+// batch avoids rewriting the complete JSON index once per scene.
+type ScenePeopleUpdate struct {
+	SceneID   string
+	PersonIDs []string
+}
+
+type ScenePeopleBatchStore interface {
+	UpdateScenePeopleBatch(string, []ScenePeopleUpdate) error
 }
 
 type storedScene struct {
@@ -149,6 +171,12 @@ func (s *FileStore) UpsertMedia(media model.Media, embeddings [][]float32, embed
 }
 
 func stableSceneID(mediaID string, scene model.Scene) string {
+	return StableSceneID(mediaID, scene)
+}
+
+// StableSceneID is shared with optional scene annotation pipelines that need
+// to persist tags before the vector store receives the media record.
+func StableSceneID(mediaID string, scene model.Scene) string {
 	value := fmt.Sprintf("%s:%0.6f:%0.6f:%s", mediaID, scene.Start, scene.End, scene.Preview)
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:16])
@@ -160,7 +188,13 @@ func (s *FileStore) SearchDocuments(filter Filter) []SceneDocument {
 	documents := make([]SceneDocument, 0, len(s.state.Scenes))
 	for _, stored := range s.state.Scenes {
 		media, ok := s.state.Media[stored.MediaID]
-		if !ok || !matchesFilter(media, filter) {
+		if !ok || !matchesFilter(media, Filter{MediaID: filter.MediaID, Type: filter.Type, Year: filter.Year, Language: filter.Language}) {
+			continue
+		}
+		if filter.PersonID != "" && !containsString(stored.Scene.PersonIDs, filter.PersonID) {
+			continue
+		}
+		if len(filter.PersonIDs) > 0 && !containsAnyString(stored.Scene.PersonIDs, filter.PersonIDs) {
 			continue
 		}
 		documents = append(documents, SceneDocument{MediaID: media.MediaID, Type: media.Type, Title: media.Title, OriginalTitle: media.OriginalTitle, Year: cloneInt(media.Year), Language: append([]string(nil), media.Language...), Description: media.Description, Tags: append([]string(nil), media.Tags...), SourceURL: media.SourceURL, Scene: stored.Scene, Embedding: append([]float32(nil), stored.Embedding...), EmbeddingModel: stored.EmbeddingModel, EmbeddingDimension: stored.EmbeddingDim})
@@ -175,6 +209,9 @@ func (s *FileStore) SearchDocuments(filter Filter) []SceneDocument {
 }
 
 func matchesFilter(media model.Media, filter Filter) bool {
+	if filter.MediaID != "" && media.MediaID != filter.MediaID {
+		return false
+	}
 	if filter.Type != "" && media.Type != filter.Type {
 		return false
 	}
@@ -264,6 +301,42 @@ func (s *FileStore) DeleteScene(mediaID, sceneID string) (model.Scene, bool) {
 	return stored.Scene, true
 }
 
+func (s *FileStore) UpdateScenePeople(mediaID, sceneID string, personIDs []string) error {
+	return s.UpdateScenePeopleBatch(mediaID, []ScenePeopleUpdate{{SceneID: sceneID, PersonIDs: personIDs}})
+}
+
+func (s *FileStore) UpdateScenePeopleBatch(mediaID string, updates []ScenePeopleUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(mediaID) == "" {
+		return fmt.Errorf("media id is required")
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	previous := make(map[string][]string, len(updates))
+	for _, update := range updates {
+		stored, ok := s.state.Scenes[update.SceneID]
+		if !ok || stored.MediaID != mediaID {
+			return fmt.Errorf("scene not found")
+		}
+		if _, exists := previous[update.SceneID]; !exists {
+			previous[update.SceneID] = append([]string(nil), stored.Scene.PersonIDs...)
+		}
+		stored.Scene.PersonIDs = uniqueStrings(update.PersonIDs)
+		s.state.Scenes[update.SceneID] = stored
+	}
+	if err := s.persistLocked(); err != nil {
+		for sceneID, personIDs := range previous {
+			stored := s.state.Scenes[sceneID]
+			stored.Scene.PersonIDs = personIDs
+			s.state.Scenes[sceneID] = stored
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *FileStore) Stats() (int, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -315,6 +388,41 @@ func cloneMetadata(value map[string]any) map[string]any {
 	result := make(map[string]any, len(value))
 	for key, item := range value {
 		result[key] = item
+	}
+	return result
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyString(values, targets []string) bool {
+	for _, target := range targets {
+		if containsString(values, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
 	}
 	return result
 }

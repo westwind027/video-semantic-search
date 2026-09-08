@@ -1,0 +1,3 @@
+# InsightFace is optional until the identity path is enabled. The existing
+# shared Hunyuan3D environment supplies Python, NumPy, OpenCV and ONNX Runtime.
+insightface>=0.7.3

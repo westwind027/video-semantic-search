@@ -190,5 +190,10 @@ func rewriteHLSPlaylist(payload []byte, baseURL, proxyPrefix string) []byte {
 func isTranscodeCDNHost(host string) bool {
 	return strings.HasSuffix(host, "aliyundrive.net") ||
 		strings.HasSuffix(host, "alipan.com") ||
-		strings.HasSuffix(host, "aliyundrive.com")
+		strings.HasSuffix(host, "aliyundrive.com") ||
+		// Some files are transcoded onto the .cloud CDN instead (e.g.
+		// video-preview-v6.aliyundrive.cloud); without this every segment of
+		// such a file is rejected here and playback falls back to the
+		// throttled original stream.
+		strings.HasSuffix(host, "aliyundrive.cloud")
 }

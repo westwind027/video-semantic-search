@@ -13,6 +13,15 @@
 /home/zephyr/go/src/hunyuan3d/.venv/bin/python -m pip install -r python/requirements-model-extra.txt
 ```
 
+人脸识别使用独立的 Identity Service，不与 WeMM 进程混合：
+
+```bash
+/home/zephyr/go/src/hunyuan3d/.venv/bin/python -m pip install -r python/requirements-identity.txt
+IDENTITY_PORT=7003 scripts/start_identity.sh
+```
+
+Identity Service 提供 `GET /healthz`、`POST /v1/faces/embed` 和面向场景批处理的 `POST /v1/faces/embed-batch`。默认加载 InsightFace `buffalo_l` 并返回每张脸的 bbox、检测分数、质量分数和 512 维向量；`IDENTITY_BACKEND=hash` 只用于离线联调。启动脚本会自动加入共享 Python 环境中 NVIDIA CUDA/cuDNN wheel 的动态库路径，避免 ONNX Runtime 在有 GPU 时退回 CPU。
+
 WEMM 模型首次加载时将通过 `HTTP_PROXY`/`HTTPS_PROXY` 下载并缓存权重。官方建议使用 `transformers==5.2.0` 做严格复现；当前复用环境的 Transformers 5.x 已能加载 WEMM 的远程模型代码，如需严格复现可单独评估是否调整该环境版本。
 
 ```bash

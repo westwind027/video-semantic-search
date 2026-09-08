@@ -4,11 +4,15 @@ __pycache__/
 .venv/
 .env
 data/*.db
+data/identity.db.pre-*.sqlite
 data/*.db-shm
 data/*.db-wal
 data/index.json
 data/acquisition_tasks.json
 data/alipan_profiles.json
+data/identity.json
+data/identity-faces/
+data/imdb/
 # 抽帧与抓取生成的图片产物，可由 ingest / 爬虫重新生成
 data/frames/
 logs/

@@ -1,7 +1,9 @@
 package httpclient
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +14,18 @@ import (
 // those variables, which is undesirable for this service because remote media
 // requests must not silently inherit the IDE or shell proxy configuration.
 func NewDirectClient(timeout time.Duration) *http.Client {
+	client, _ := newClient(timeout, "")
+	return client
+}
+
+// NewProxyClient creates an HTTP client whose proxy is explicitly selected by
+// the caller. It is intentionally separate from NewDirectClient so a proxy
+// cannot silently leak into the Go media/search services.
+func NewProxyClient(timeout time.Duration, proxyURL string) (*http.Client, error) {
+	return newClient(timeout, proxyURL)
+}
+
+func newClient(timeout time.Duration, proxyURL string) (*http.Client, error) {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		transport = &http.Transport{}
@@ -19,9 +33,19 @@ func NewDirectClient(timeout time.Duration) *http.Client {
 		transport = transport.Clone()
 	}
 	transport.Proxy = nil
+	if strings.TrimSpace(proxyURL) != "" {
+		parsed, err := url.Parse(strings.TrimSpace(proxyURL))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return nil, fmt.Errorf("invalid HTTP proxy URL %q", proxyURL)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("unsupported HTTP proxy scheme %q", parsed.Scheme)
+		}
+		transport.Proxy = http.ProxyURL(parsed)
+	}
 	transport.MaxIdleConns = 64
 	transport.MaxIdleConnsPerHost = 32
-	return &http.Client{Transport: transport, Timeout: timeout}
+	return &http.Client{Transport: transport, Timeout: timeout}, nil
 }
 
 // WithoutProxyEnvironment removes proxy variables before starting external

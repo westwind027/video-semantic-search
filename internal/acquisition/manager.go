@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"video-semantic-search/internal/embedding"
+	"video-semantic-search/internal/identity"
 	"video-semantic-search/internal/model"
 	"video-semantic-search/internal/search"
 )
@@ -30,6 +31,7 @@ type jobKind string
 const (
 	jobKindAcquisition jobKind = "acquisition"
 	jobKindRebuild     jobKind = "embedding_rebuild"
+	jobKindIdentity    jobKind = "identity_rebuild"
 )
 
 // queuedJob is one task waiting for a worker. Submission only enqueues cheap
@@ -40,6 +42,7 @@ type queuedJob struct {
 	request      Request
 	mediaID      string
 	imageProfile embedding.ImageProfile
+	identity     bool
 	ctx          context.Context
 	cancel       context.CancelFunc
 }
@@ -61,6 +64,7 @@ type Task struct {
 	DriveID            string       `json:"drive_id,omitempty"`
 	FileID             string       `json:"file_id,omitempty"`
 	SourceName         string       `json:"source_name,omitempty"`
+	MovieID            string       `json:"movie_id,omitempty"`
 	ContentSHA256      string       `json:"content_sha256,omitempty"`
 	ContentFingerprint string       `json:"content_fingerprint,omitempty"`
 	Media              *model.Media `json:"media,omitempty"`
@@ -74,12 +78,38 @@ type Manager struct {
 	engine    *search.Engine
 	taskFile  string
 	workers   int
+	identity  identity.Tagger
+	preparer  identity.MoviePreparer
 
 	mu          sync.RWMutex
 	tasks       map[string]Task
 	cancel      map[string]context.CancelFunc
 	queue       chan queuedJob
 	lastPersist time.Time
+}
+
+// SetIdentityTagger enables optional cast-filtered face tagging. Keeping this
+// as a setter preserves the existing constructor/API for deployments that do
+// not run the Python identity service yet.
+func (m *Manager) SetIdentityTagger(tagger identity.Tagger) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.identity = tagger
+	m.mu.Unlock()
+}
+
+// SetMoviePreparer attaches the metadata/readiness gate to the worker side of
+// acquisition. Submission stays cheap: a queued task is allowed to exist even
+// when TMDB or Identity is slow or temporarily unavailable.
+func (m *Manager) SetMoviePreparer(preparer identity.MoviePreparer) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.preparer = preparer
+	m.mu.Unlock()
 }
 
 func NewManager(processor Processor, engine *search.Engine) *Manager {
@@ -154,7 +184,7 @@ func (m *Manager) SubmitContext(ctx context.Context, request Request) (Task, err
 		return Task{}, fmt.Errorf("create acquisition id: %w", err)
 	}
 	now := time.Now().UTC()
-	task := Task{ID: mediaID, State: "queued", Stage: StageQueued, Percent: 0, Message: "任务已创建，等待处理", MediaID: mediaID, LocalPath: path, Source: request.Source, DriveID: request.DriveID, FileID: request.FileID, SourceName: request.SourceName, CreatedAt: now, UpdatedAt: now}
+	task := Task{ID: mediaID, State: "queued", Stage: StageQueued, Percent: 0, Message: "任务已创建，等待处理", MediaID: mediaID, LocalPath: path, Source: request.Source, DriveID: request.DriveID, FileID: request.FileID, SourceName: request.SourceName, MovieID: request.MovieID, CreatedAt: now, UpdatedAt: now}
 	if request.IsRemote() {
 		task.ContentFingerprint = contentFingerprint
 	}
@@ -275,6 +305,57 @@ func (m *Manager) RebuildEmbeddings(mediaID string, profile embedding.ImageProfi
 	return task, nil
 }
 
+// RebuildPersons queues identity-only tagging for an indexed video. It reuses
+// existing representative frames and never recalculates WeMM vectors.
+func (m *Manager) RebuildPersons(mediaID string) (Task, error) {
+	if m == nil || m.engine == nil {
+		return Task{}, fmt.Errorf("acquisition manager is not configured")
+	}
+	m.mu.RLock()
+	tagger := m.identity
+	m.mu.RUnlock()
+	if tagger == nil {
+		return Task{}, fmt.Errorf("identity service is not configured")
+	}
+	mediaID = strings.TrimSpace(mediaID)
+	if mediaID == "" {
+		return Task{}, fmt.Errorf("media_id is required")
+	}
+	media, ok := m.engine.GetMedia(mediaID)
+	if !ok {
+		return Task{}, fmt.Errorf("media %q not found", mediaID)
+	}
+	now := time.Now().UTC()
+	m.mu.Lock()
+	for _, existing := range m.tasks {
+		if existing.Operation == string(jobKindIdentity) && existing.MediaID == mediaID && (existing.State == "queued" || existing.State == "running") {
+			m.mu.Unlock()
+			return existing, nil
+		}
+	}
+	taskID, err := model.NewMediaID()
+	if err != nil {
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("create identity task id: %w", err)
+	}
+	task := Task{ID: taskID, State: "queued", Stage: StageQueued, Message: "等待重建人物标签", MediaID: mediaID, SceneCount: len(media.Scenes), SourceName: media.Title, Operation: string(jobKindIdentity), CreatedAt: now, UpdatedAt: now}
+	workContext, cancel := context.WithCancel(context.Background())
+	m.tasks[taskID] = task
+	m.cancel[taskID] = cancel
+	m.persistLocked(true)
+	select {
+	case m.queue <- queuedJob{kind: jobKindIdentity, taskID: taskID, mediaID: mediaID, ctx: workContext, cancel: cancel, identity: true}:
+	default:
+		delete(m.tasks, taskID)
+		delete(m.cancel, taskID)
+		cancel()
+		m.mu.Unlock()
+		return Task{}, fmt.Errorf("task queue is full, try again later")
+	}
+	m.mu.Unlock()
+	return task, nil
+}
+
 func (m *Manager) Get(taskID string) (Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -376,7 +457,67 @@ func (m *Manager) execute(job queuedJob) {
 		m.runRebuild(job.taskID, job.mediaID, job.imageProfile, job.ctx)
 		return
 	}
+	if job.kind == jobKindIdentity {
+		m.runIdentityRebuild(job.taskID, job.mediaID, job.ctx)
+		return
+	}
 	m.run(job.taskID, job.request, job.ctx)
+}
+
+func (m *Manager) runIdentityRebuild(taskID, mediaID string, workContext context.Context) {
+	m.update(taskID, Progress{Stage: StageIdentity, Percent: 0.02, Message: "正在识别人脸并重建人物标签"})
+	m.mu.RLock()
+	tagger := m.identity
+	m.mu.RUnlock()
+	media, ok := m.engine.GetMedia(mediaID)
+	if !ok || tagger == nil {
+		m.fail(taskID, fmt.Errorf("identity media or service is unavailable"))
+		return
+	}
+	var (
+		tagged model.Media
+		err    error
+	)
+	if progressTagger, ok := tagger.(identity.ProgressTagger); ok {
+		tagged, err = progressTagger.RebuildMediaWithProgress(workContext, media, func(done, total int) {
+			percent := float32(0.02)
+			if total > 0 {
+				percent += 0.81 * float32(done) / float32(total)
+			}
+			m.update(taskID, Progress{
+				Stage:   StageIdentity,
+				Percent: percent,
+				Message: fmt.Sprintf("正在识别人脸并重建人物标签 %d/%d", done, total),
+			})
+		})
+	} else {
+		tagged, err = tagger.RebuildMedia(workContext, media)
+	}
+	if err != nil {
+		if workContext.Err() != nil {
+			return
+		}
+		m.fail(taskID, err)
+		return
+	}
+	m.update(taskID, Progress{Stage: StageIdentity, Percent: 0.96, Message: "正在保存人物标签"})
+	if err := m.engine.UpdateScenePeople(tagged); err != nil {
+		m.fail(taskID, err)
+		return
+	}
+	m.mu.Lock()
+	task, exists := m.tasks[taskID]
+	if exists && task.State != "canceled" {
+		task.State = "completed"
+		task.Stage = StageCompleted
+		task.Percent = 1
+		task.Message = "已完成所有人物标签重建"
+		task.SceneCount = len(tagged.Scenes)
+		task.UpdatedAt = time.Now().UTC()
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) runRebuild(taskID, mediaID string, profile embedding.ImageProfile, workContext context.Context) {
@@ -432,6 +573,12 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 			return
 		}
 	}
+	if err := m.prepareMovie(taskID, &request, workContext); err != nil {
+		if workContext.Err() == nil {
+			m.fail(taskID, err)
+		}
+		return
+	}
 	m.update(taskID, Progress{Stage: StageParsing, Percent: 0.02, Message: "任务开始"})
 	// A re-submission that changed the extraction profile keeps the original
 	// media ID so indexing overwrites the old record; processing must target
@@ -454,6 +601,21 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 	}
 	if workContext.Err() != nil {
 		return
+	}
+	m.mu.RLock()
+	tagger := m.identity
+	m.mu.RUnlock()
+	if tagger != nil {
+		m.update(taskID, Progress{Stage: StageIdentity, Percent: 0.84, Message: "正在根据影片 cast 识别人脸"})
+		tagged, tagErr := tagger.TagMedia(workContext, media)
+		if tagErr != nil {
+			if workContext.Err() != nil {
+				return
+			}
+			m.fail(taskID, tagErr)
+			return
+		}
+		media = tagged
 	}
 	m.mu.RLock()
 	task, taskExists := m.tasks[taskID]
@@ -499,6 +661,54 @@ func (m *Manager) run(taskID string, request Request, workContext context.Contex
 		m.persistLocked(true)
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) prepareMovie(taskID string, request *Request, workContext context.Context) error {
+	m.mu.RLock()
+	preparer := m.preparer
+	m.mu.RUnlock()
+	if preparer == nil || request == nil {
+		return nil
+	}
+
+	fileName := strings.TrimSpace(request.SourceName)
+	if fileName == "" && strings.TrimSpace(request.LocalPath) != "" {
+		fileName = filepath.Base(request.LocalPath)
+	}
+	m.update(taskID, Progress{Stage: StagePreparing, Percent: 0.01, Message: "正在准备 IMDb/TMDB/人脸库"})
+	prepared, err := preparer.Prepare(workContext, identity.MoviePreparationRequest{
+		MovieID:  request.MovieID,
+		Title:    request.Title,
+		FileName: fileName,
+	})
+	if err != nil {
+		return fmt.Errorf("准备影片元数据: %w", err)
+	}
+	if !prepared.Found {
+		if message := strings.TrimSpace(prepared.Message); message != "" {
+			return fmt.Errorf("%s", message)
+		}
+		return fmt.Errorf("未找到 IMDb 影片元数据")
+	}
+	if !prepared.Ready {
+		if message := strings.TrimSpace(prepared.Message); message != "" {
+			return fmt.Errorf("%s", message)
+		}
+		return fmt.Errorf("影片元数据或人脸向量库尚未完成")
+	}
+	if strings.TrimSpace(prepared.Movie.ID) == "" {
+		return nil
+	}
+	request.MovieID = prepared.Movie.ID
+	m.mu.Lock()
+	if task, ok := m.tasks[taskID]; ok && task.State != "canceled" {
+		task.MovieID = prepared.Movie.ID
+		task.UpdatedAt = time.Now().UTC()
+		m.tasks[taskID] = task
+		m.persistLocked(true)
+	}
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) update(taskID string, progress Progress) {
@@ -707,6 +917,7 @@ func duplicateTask(media model.Media, request Request, fingerprint string, now t
 		DriveID:    request.DriveID,
 		FileID:     request.FileID,
 		SourceName: request.SourceName,
+		MovieID:    request.MovieID,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}

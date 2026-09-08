@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"video-semantic-search/internal/embedding"
+	"video-semantic-search/internal/identity"
 	"video-semantic-search/internal/model"
 	"video-semantic-search/internal/search"
 	"video-semantic-search/internal/store"
@@ -127,6 +128,77 @@ func (managerEmbedder) EmbedImages(context.Context, []string) (embedding.Result,
 
 func (managerEmbedder) Health(context.Context) (embedding.Health, error) {
 	return embedding.Health{Status: "ok", Model: "test", Dimension: 1}, nil
+}
+
+type progressIdentityTagger struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+}
+
+func (t *progressIdentityTagger) TagMedia(_ context.Context, media model.Media) (model.Media, error) {
+	return media, nil
+}
+
+func (t *progressIdentityTagger) RebuildMedia(ctx context.Context, media model.Media) (model.Media, error) {
+	return t.wait(ctx, media)
+}
+
+func (t *progressIdentityTagger) RebuildMediaWithProgress(ctx context.Context, media model.Media, progress identity.ProgressFunc) (model.Media, error) {
+	t.startedOnce.Do(func() { close(t.started) })
+	progress(1, len(media.Scenes))
+	return t.wait(ctx, media)
+}
+
+func (t *progressIdentityTagger) wait(ctx context.Context, media model.Media) (model.Media, error) {
+	t.startedOnce.Do(func() { close(t.started) })
+	select {
+	case <-t.release:
+		return media, nil
+	case <-ctx.Done():
+		return model.Media{}, ctx.Err()
+	}
+}
+
+var _ identity.Tagger = (*progressIdentityTagger)(nil)
+
+func TestManagerReportsIdentityRebuildProgress(t *testing.T) {
+	directory := t.TempDir()
+	index, err := store.NewFileStore(filepath.Join(directory, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	engine := search.NewEngine(index, managerEmbedder{}, false)
+	media := model.Media{MediaID: "identity-progress-media", Title: "Identity progress", Scenes: []model.Scene{{Start: 0, End: 1}}}
+	if _, err := engine.Index(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	tagger := &progressIdentityTagger{started: make(chan struct{}), release: make(chan struct{})}
+	manager := NewManager(&immediateProcessor{}, engine)
+	manager.SetIdentityTagger(tagger)
+	task, err := manager.RebuildPersons(media.MediaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-tagger.started:
+	case <-time.After(time.Second):
+		t.Fatal("identity rebuild did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := manager.Get(task.ID)
+		if ok && current.State == "running" && current.Percent > 0.02 && current.Percent < 1 {
+			close(tagger.release)
+			waitForManagerState(t, manager, task.ID, "completed")
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(tagger.release)
+	current, _ := manager.Get(task.ID)
+	t.Fatalf("identity rebuild progress = %+v, want an intermediate percent above 0.02", current)
 }
 
 func TestManagerStopsRunningTask(t *testing.T) {

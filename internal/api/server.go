@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,24 +13,37 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"video-semantic-search/internal/acquisition"
 	"video-semantic-search/internal/alipan"
 	"video-semantic-search/internal/embedding"
+	"video-semantic-search/internal/httpclient"
+	"video-semantic-search/internal/identity"
+	"video-semantic-search/internal/metadata"
 	"video-semantic-search/internal/model"
 	"video-semantic-search/internal/search"
 	"video-semantic-search/internal/store"
 )
 
 type Server struct {
-	engine    *search.Engine
-	store     store.IndexStore
-	embedder  embedding.Client
-	jobs      *acquisition.Manager
-	frameRoot string
-	alipan    *alipan.Manager
-	streams   *streamProxy
-	cache     *streamCache
+	engine                   *search.Engine
+	store                    store.IndexStore
+	embedder                 embedding.Client
+	jobs                     *acquisition.Manager
+	frameRoot                string
+	alipan                   *alipan.Manager
+	streams                  *streamProxy
+	cache                    *streamCache
+	identityStore            identity.Store
+	identityTagger           identity.Tagger
+	identityClient           identity.Client
+	moviePreparer            identity.MoviePreparer
+	tmdb                     *metadata.TMDBClient
+	processedMovieMu         sync.Mutex
+	processedMovieSignature  string
+	processedMovieCache      []string
+	processedMovieCacheValid bool
 	// Signed CDN playlist URLs for transcoded playback, keyed by media.
 	transcodeMu   sync.Mutex
 	transcodeURLs map[string]transcodeEntry
@@ -47,7 +61,7 @@ func NewServerWithAcquisitionAndAliyun(engine *search.Engine, indexStore store.I
 	if frameRoot == "" {
 		frameRoot = "data/frames"
 	}
-	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), transcodeURLs: map[string]transcodeEntry{}}
+	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -60,6 +74,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/media", s.handleMediaCollection)
 	mux.HandleFunc("/v1/media/embeddings/rebuild", s.handleEmbeddingRebuildBatch)
 	mux.HandleFunc("/v1/media/batch/delete", s.handleMediaBatchDelete)
+	mux.HandleFunc("/v1/metadata/movies/resolve", s.handleMovieResolve)
+	mux.HandleFunc("/v1/metadata/movies/prepare", s.handleMoviePrepare)
+	mux.HandleFunc("/v1/metadata/movies", s.handleMovieCollection)
+	mux.HandleFunc("/v1/metadata/movies/", s.handleMovieByID)
+	mux.HandleFunc("/v1/metadata/persons", s.handlePersonCollection)
+	mux.HandleFunc("/v1/metadata/persons/", s.handlePersonByID)
+	mux.HandleFunc("/v1/persons/", s.handlePersonFaces)
 	mux.HandleFunc("/v1/media/", s.handleMediaByID)
 	mux.HandleFunc("/v1/files/inspect", s.handleFileInspect)
 	mux.HandleFunc("/v1/files/validate", s.handleFileValidation)
@@ -80,6 +101,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/connectors/alipan/logout", s.handleAlipanLogout)
 	mux.HandleFunc("/v1/search", s.handleSearch)
 	return mux
+}
+
+// ConfigureIdentity attaches the optional metadata and face-recognition
+// components after construction. Existing callers can keep using the legacy
+// constructors without enabling the identity pipeline.
+func (s *Server) ConfigureIdentity(identityStore identity.Store, tagger identity.Tagger) {
+	s.identityStore = identityStore
+	s.identityTagger = tagger
+	if service, ok := tagger.(*identity.TaggerService); ok {
+		s.identityClient = service.Client()
+	}
+}
+
+// ConfigureMoviePreparer attaches the idempotent IMDb/TMDB/face-bank
+// preparation module used by the import UI. It is separate from Tagger so a
+// caller can prepare metadata before any video frames are processed.
+func (s *Server) ConfigureMoviePreparer(preparer identity.MoviePreparer) {
+	s.moviePreparer = preparer
 }
 
 func (s *Server) handleRoot(response http.ResponseWriter, request *http.Request) {
@@ -109,6 +148,16 @@ func (s *Server) handleHealth(response http.ResponseWriter, request *http.Reques
 	health.EmbeddingStatus = embeddingHealth.Status
 	health.EmbeddingModel = embeddingHealth.Model
 	health.EmbeddingDimension = embeddingHealth.Dimension
+	if s.identityClient != nil {
+		identityHealth, identityErr := s.identityClient.Health(request.Context())
+		if identityErr != nil {
+			health.IdentityStatus = "unavailable"
+		} else {
+			health.IdentityStatus = identityHealth.Status
+			health.IdentityModel = identityHealth.Model
+			health.IdentityDimension = identityHealth.Dimension
+		}
+	}
 	writeJSON(response, http.StatusOK, health)
 }
 
@@ -175,6 +224,10 @@ func (s *Server) handleMediaByID(response http.ResponseWriter, request *http.Req
 	}
 	if len(parts) == 3 && parts[1] == "embeddings" && parts[2] == "rebuild" && request.Method == http.MethodPost {
 		s.handleEmbeddingRebuild(response, request, parts[0])
+		return
+	}
+	if len(parts) == 3 && parts[1] == "persons" && parts[2] == "rebuild" && request.Method == http.MethodPost {
+		s.handlePersonRebuild(response, request, parts[0])
 		return
 	}
 	mediaID, err := url.PathUnescape(path)
@@ -920,6 +973,624 @@ func (s *Server) handleAlipanLogout(response http.ResponseWriter, request *http.
 	response.WriteHeader(http.StatusNoContent)
 }
 
+type movieResolveRequest struct {
+	MovieID  string `json:"movie_id,omitempty"`
+	Title    string `json:"title,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	Year     *int   `json:"year,omitempty"`
+	TMDBID   int    `json:"tmdb_id,omitempty"`
+}
+
+type movieCastRequest struct {
+	Cast []model.MovieCast `json:"cast"`
+}
+
+func (s *Server) handleMovieCollection(response http.ResponseWriter, request *http.Request) {
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		query := strings.TrimSpace(request.URL.Query().Get("q"))
+		limit := 20
+		if value := strings.TrimSpace(request.URL.Query().Get("limit")); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 {
+				writeError(response, http.StatusBadRequest, fmt.Errorf("limit must be a positive integer"))
+				return
+			}
+			limit = parsed
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		if searcher, ok := s.identityStore.(identity.MovieSearcher); ok {
+			writeJSON(response, http.StatusOK, searcher.SearchMovies(query, limit))
+			return
+		}
+		writeJSON(response, http.StatusOK, s.identityStore.ListMovies())
+	case http.MethodPost:
+		var movie model.Movie
+		if err := decodeJSON(response, request, &movie); err != nil {
+			return
+		}
+		if strings.TrimSpace(movie.ID) == "" {
+			movie.ID = metadata.EntityID("movie", movie.TMDBID, movie.IMDbID, movie.Title, movie.Year)
+		}
+		if err := s.identityStore.UpsertMovie(movie); err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(response, http.StatusCreated, movie)
+	default:
+		methodNotAllowed(response)
+	}
+}
+
+func (s *Server) handleMovieResolve(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	var payload movieResolveRequest
+	if err := decodeJSON(response, request, &payload); err != nil {
+		return
+	}
+	title := strings.TrimSpace(payload.Title)
+	resolution := metadata.Resolution{Title: title, Year: payload.Year}
+	if title == "" {
+		resolution = metadata.ResolveFilename(payload.FileName)
+		title = resolution.Title
+	}
+	if payload.Year != nil {
+		resolution.Year = payload.Year
+	}
+	if title == "" {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("title or file_name is required"))
+		return
+	}
+	media := model.Media{MovieID: payload.MovieID, Title: payload.Title, Year: resolution.Year}
+	if strings.TrimSpace(payload.FileName) != "" {
+		if strings.TrimSpace(media.Title) == "" {
+			media.Title = payload.FileName
+		} else {
+			media.Metadata = map[string]any{"remote_name": payload.FileName}
+		}
+	}
+	movie, found := identity.ResolveMovieForMedia(s.identityStore, media)
+	writeJSON(response, http.StatusOK, map[string]any{"resolution": resolution, "found": found, "movie": optionalMovie(movie, found)})
+}
+
+func (s *Server) handleMoviePrepare(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response)
+		return
+	}
+	if s.moviePreparer == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("movie preparation service is not configured"))
+		return
+	}
+	var payload movieResolveRequest
+	if err := decodeJSON(response, request, &payload); err != nil {
+		return
+	}
+	result, err := s.moviePreparer.Prepare(request.Context(), identity.MoviePreparationRequest{MovieID: payload.MovieID, Title: payload.Title, FileName: payload.FileName, Year: payload.Year})
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *Server) handleMovieByID(response http.ResponseWriter, request *http.Request) {
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	path := strings.TrimPrefix(request.URL.Path, "/v1/metadata/movies/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(response, request)
+		return
+	}
+	movieID, err := url.PathUnescape(parts[0])
+	if err != nil || movieID == "" {
+		http.NotFound(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "cast" {
+		if request.Method != http.MethodPost {
+			methodNotAllowed(response)
+			return
+		}
+		var payload movieCastRequest
+		if err := decodeJSON(response, request, &payload); err != nil {
+			return
+		}
+		if _, ok := s.identityStore.GetMovie(movieID); !ok {
+			writeError(response, http.StatusNotFound, fmt.Errorf("movie not found"))
+			return
+		}
+		for index := range payload.Cast {
+			person, personOK := s.identityStore.GetPerson(payload.Cast[index].PersonID)
+			if !personOK || strings.TrimSpace(person.IMDbID) == "" {
+				writeError(response, http.StatusBadRequest, fmt.Errorf("cast person %q is not an IMDb person", payload.Cast[index].PersonID))
+				return
+			}
+			payload.Cast[index].Source = "imdb_principals"
+		}
+		if err := s.identityStore.ReplaceMovieCast(movieID, payload.Cast); err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"movie_id": movieID, "cast": s.identityStore.GetMovieCast(movieID)})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "sync" {
+		if request.Method != http.MethodPost {
+			methodNotAllowed(response)
+			return
+		}
+		if s.tmdb == nil || !s.tmdb.Configured() {
+			writeError(response, http.StatusServiceUnavailable, fmt.Errorf("TMDB_API_KEY is not configured"))
+			return
+		}
+		var payload movieResolveRequest
+		if request.ContentLength != 0 {
+			if err := decodeJSON(response, request, &payload); err != nil {
+				return
+			}
+		}
+		stored, storedOK := s.identityStore.GetMovie(movieID)
+		if !storedOK {
+			writeError(response, http.StatusNotFound, fmt.Errorf("movie not found"))
+			return
+		}
+		if payload.Title == "" && storedOK {
+			payload.Title, payload.Year, payload.TMDBID = stored.Title, stored.Year, stored.TMDBID
+		}
+		result, syncErr := s.tmdb.SyncMovie(request.Context(), payload.Title, payload.Year, payload.TMDBID)
+		if syncErr != nil {
+			writeError(response, http.StatusBadGateway, syncErr)
+			return
+		}
+		result.Movie.ID = movieID
+		if result.Movie.IMDbID == "" {
+			result.Movie.IMDbID = stored.IMDbID
+		}
+		preparer := identity.NewMoviePreparationService(s.identityStore, s.tmdb, nil, 5, 8, false)
+		if err := preparer.ApplyTMDBResult(&stored, result); err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
+		// This endpoint intentionally remains the lightweight administrative
+		// sync (top cast only). The import preflight will upgrade it to the
+		// complete cast/profile snapshot before a movie is submitted.
+		stored.TMDBStatus = identity.TMDBStatusPartial
+		stored.Metadata = mergeMetadata(stored.Metadata, map[string]any{"tmdb_sync_complete": false, "tmdb_full_cast": false, "tmdb_sync_scope": "top_cast"})
+		if err := s.identityStore.UpsertMovie(stored); err != nil {
+			writeError(response, http.StatusInternalServerError, err)
+			return
+		}
+		result.Movie = stored
+		result.Cast = s.identityStore.GetMovieCast(movieID)
+		writeJSON(response, http.StatusOK, result)
+		return
+	}
+	if len(parts) != 1 || request.Method != http.MethodGet {
+		methodNotAllowed(response)
+		return
+	}
+	movie, ok := s.identityStore.GetMovie(movieID)
+	if !ok {
+		writeError(response, http.StatusNotFound, fmt.Errorf("movie not found"))
+		return
+	}
+	cast := s.identityStore.GetMovieCast(movieID)
+	people := make([]model.Person, 0, len(cast))
+	seenPeople := make(map[string]struct{}, len(cast))
+	for _, member := range cast {
+		personID := strings.TrimSpace(member.PersonID)
+		if personID == "" {
+			continue
+		}
+		if _, seen := seenPeople[personID]; seen {
+			continue
+		}
+		person, personOK := s.identityStore.GetPerson(personID)
+		if !personOK {
+			continue
+		}
+		seenPeople[personID] = struct{}{}
+		people = append(people, person)
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"movie": movie, "cast": cast, "people": people})
+}
+
+func (s *Server) handlePersonCollection(response http.ResponseWriter, request *http.Request) {
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		query := strings.TrimSpace(request.URL.Query().Get("q"))
+		if query == "" {
+			query = strings.TrimSpace(request.URL.Query().Get("query"))
+		}
+		limitValue := strings.TrimSpace(request.URL.Query().Get("limit"))
+		limit := 20
+		if limitValue != "" {
+			parsed, err := strconv.Atoi(limitValue)
+			if err != nil || parsed < 1 {
+				writeError(response, http.StatusBadRequest, fmt.Errorf("limit must be a positive integer"))
+				return
+			}
+			limit = parsed
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		if catalog, ok := s.identityStore.(identity.PersonCatalog); ok {
+			if scoped, scopedOK := s.identityStore.(identity.ProcessedMoviePersonSearcher); scopedOK {
+				writeJSON(response, http.StatusOK, scoped.SearchReadyPersonsForMovies(query, limit, s.processedMovieIDs()))
+				return
+			}
+			writeJSON(response, http.StatusOK, catalog.SearchReadyPersons(query, limit))
+			return
+		}
+		// Keep a safe fallback for alternative identity stores that predate the
+		// readiness-aware catalog interface.
+		if searcher, ok := s.identityStore.(identity.PersonSearcher); ok {
+			writeJSON(response, http.StatusOK, searcher.SearchPersons(query, limit))
+			return
+		}
+		writeJSON(response, http.StatusOK, s.identityStore.ListPersons())
+	case http.MethodPost:
+		var person model.Person
+		if err := decodeJSON(response, request, &person); err != nil {
+			return
+		}
+		if strings.TrimSpace(person.ID) == "" {
+			person.ID = metadata.EntityID("person", person.TMDBID, person.IMDbID, person.Name, nil)
+		}
+		if strings.TrimSpace(person.IMDbID) == "" {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("person must originate from an IMDb actor relation"))
+			return
+		}
+		if err := s.identityStore.UpsertPerson(person); err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(response, http.StatusCreated, person)
+	default:
+		methodNotAllowed(response)
+	}
+}
+
+func (s *Server) processedMovieIDs() []string {
+	if s == nil || s.store == nil || s.identityStore == nil {
+		return []string{}
+	}
+	mediaList := s.store.ListMedia()
+	signature := processedMediaSignature(mediaList)
+	s.processedMovieMu.Lock()
+	defer s.processedMovieMu.Unlock()
+	if s.processedMovieCacheValid && s.processedMovieSignature == signature {
+		return append([]string(nil), s.processedMovieCache...)
+	}
+	seen := make(map[string]struct{})
+	for _, media := range mediaList {
+		// ListMedia returns the stored scene records, so a non-empty scene set is
+		// the durable evidence that this media completed frame extraction/indexing.
+		if len(media.Scenes) == 0 {
+			continue
+		}
+		if movie, ok := identity.ResolveMovieForMedia(s.identityStore, media); ok && movie.ID != "" {
+			seen[movie.ID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for movieID := range seen {
+		result = append(result, movieID)
+	}
+	sort.Strings(result)
+	s.processedMovieSignature = signature
+	s.processedMovieCache = append([]string(nil), result...)
+	s.processedMovieCacheValid = true
+	return append([]string(nil), result...)
+}
+
+func processedMediaSignature(mediaList []model.Media) string {
+	var builder strings.Builder
+	for _, media := range mediaList {
+		builder.WriteString(media.MediaID)
+		builder.WriteByte('\x00')
+		builder.WriteString(media.MovieID)
+		builder.WriteByte('\x00')
+		builder.WriteString(media.Title)
+		builder.WriteByte('\x00')
+		if media.Year != nil {
+			builder.WriteString(strconv.Itoa(*media.Year))
+		}
+		builder.WriteByte('\x00')
+		if media.Metadata != nil {
+			if movieID, ok := media.Metadata["movie_id"].(string); ok {
+				builder.WriteString(movieID)
+			}
+		}
+		builder.WriteByte('\x00')
+		builder.WriteString(strconv.Itoa(len(media.Scenes)))
+		builder.WriteByte('\x01')
+	}
+	return builder.String()
+}
+
+func (s *Server) handlePersonByID(response http.ResponseWriter, request *http.Request) {
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	personID := strings.TrimPrefix(request.URL.Path, "/v1/metadata/persons/")
+	personID, err := url.PathUnescape(strings.Trim(personID, "/"))
+	if err != nil || personID == "" || strings.Contains(personID, "/") {
+		http.NotFound(response, request)
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response)
+		return
+	}
+	person, ok := s.identityStore.GetPerson(personID)
+	if !ok {
+		writeError(response, http.StatusNotFound, fmt.Errorf("person not found"))
+		return
+	}
+	writeJSON(response, http.StatusOK, person)
+}
+
+type personImagesRequest struct {
+	Images []model.PersonImage `json:"images,omitempty"`
+}
+
+type faceImageResult struct {
+	model.PersonImage
+	HasVector bool `json:"has_vector"`
+}
+
+func (s *Server) handlePersonFaces(response http.ResponseWriter, request *http.Request) {
+	if s.identityStore == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+		return
+	}
+	path := strings.TrimPrefix(request.URL.Path, "/v1/persons/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] != "faces" {
+		http.NotFound(response, request)
+		return
+	}
+	personID, err := url.PathUnescape(parts[0])
+	if err != nil || personID == "" {
+		http.NotFound(response, request)
+		return
+	}
+	if _, ok := s.identityStore.GetPerson(personID); !ok {
+		writeError(response, http.StatusNotFound, fmt.Errorf("person not found"))
+		return
+	}
+	switch {
+	case len(parts) == 2 && request.Method == http.MethodGet:
+		s.writePersonImages(response, personID)
+	case len(parts) == 2 && request.Method == http.MethodPost:
+		var payload personImagesRequest
+		if err := decodeJSON(response, request, &payload); err != nil {
+			return
+		}
+		if len(payload.Images) == 0 {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("images must contain at least one item"))
+			return
+		}
+		s.processPersonImages(response, request, personID, payload.Images)
+	case len(parts) == 3 && (parts[2] == "sync" || parts[2] == "rebuild") && request.Method == http.MethodPost:
+		if parts[2] == "sync" {
+			var payload personImagesRequest
+			if request.ContentLength != 0 {
+				if err := decodeJSON(response, request, &payload); err != nil {
+					return
+				}
+			}
+			if len(payload.Images) == 0 {
+				writeError(response, http.StatusBadRequest, fmt.Errorf("sync requires images with local_path or source_url"))
+				return
+			}
+			s.processPersonImages(response, request, personID, payload.Images)
+			return
+		}
+		images := s.identityStore.ListPersonImages(personID)
+		if len(images) == 0 {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("person has no reference images"))
+			return
+		}
+		s.processPersonImages(response, request, personID, images)
+	default:
+		http.NotFound(response, request)
+	}
+}
+
+func (s *Server) writePersonImages(response http.ResponseWriter, personID string) {
+	images := s.identityStore.ListPersonImages(personID)
+	vectors := make(map[string]struct{})
+	for _, vector := range s.identityStore.ListFaceVectors(personID) {
+		vectors[vector.ImageID] = struct{}{}
+	}
+	result := make([]faceImageResult, 0, len(images))
+	for _, image := range images {
+		_, hasVector := vectors[image.ID]
+		result = append(result, faceImageResult{PersonImage: image, HasVector: hasVector})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"person_id": personID, "images": result})
+}
+
+func (s *Server) processPersonImages(response http.ResponseWriter, request *http.Request, personID string, images []model.PersonImage) {
+	if s.identityTagger == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity service is not configured"))
+		return
+	}
+	if _, ok := s.identityTagger.(*identity.TaggerService); !ok {
+		writeError(response, http.StatusNotImplemented, fmt.Errorf("reference face ingestion is not supported by this identity adapter"))
+		return
+	}
+	// Reference ingestion is kept on the server so it can persist the image
+	// lifecycle and one selected face vector atomically from the user's point
+	// of view. The tagger exposes the model client through this helper.
+	faceClient := identityClient(s.identityTagger)
+	if faceClient == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity face client is not configured"))
+		return
+	}
+	config := identity.ConfigFromEnv()
+	results := make([]faceImageResult, 0, len(images))
+	failures := make([]map[string]string, 0)
+	for _, image := range images {
+		if image.ID == "" {
+			image.ID, _ = model.NewMediaID()
+		}
+		image.PersonID = personID
+		path, pathErr := s.prepareReferenceImage(request.Context(), personID, image)
+		if pathErr != nil {
+			image.Status = "failed"
+			_ = s.identityStore.UpsertPersonImage(image)
+			failures = append(failures, map[string]string{"image_id": image.ID, "error": pathErr.Error()})
+			results = append(results, faceImageResult{PersonImage: image})
+			continue
+		}
+		image.LocalPath = path
+		faceResult, embedErr := faceClient.Embed(request.Context(), path)
+		image.FaceCount = len(faceResult.Faces)
+		if embedErr != nil {
+			image.Status = "failed"
+			_ = s.identityStore.UpsertPersonImage(image)
+			failures = append(failures, map[string]string{"image_id": image.ID, "error": embedErr.Error()})
+			results = append(results, faceImageResult{PersonImage: image})
+			continue
+		}
+		if len(faceResult.Faces) != 1 || faceResult.Faces[0].DetScore < config.MinDetScore {
+			image.Status = "rejected"
+			_ = s.identityStore.DeleteFaceVector(image.ID)
+			_ = s.identityStore.UpsertPersonImage(image)
+			failures = append(failures, map[string]string{"image_id": image.ID, "error": "reference must contain exactly one face with sufficient detection score"})
+			results = append(results, faceImageResult{PersonImage: image})
+			continue
+		}
+		face := faceResult.Faces[0]
+		image.QualityScore = face.Quality
+		image.Status = "ready"
+		if err := s.identityStore.UpsertPersonImage(image); err != nil {
+			failures = append(failures, map[string]string{"image_id": image.ID, "error": err.Error()})
+			continue
+		}
+		if err := s.identityStore.UpsertFaceVector(model.FaceVector{ID: image.ID, PersonID: personID, ImageID: image.ID, Quality: face.Quality, Model: faceResult.Model, Vector: face.Embedding}); err != nil {
+			failures = append(failures, map[string]string{"image_id": image.ID, "error": err.Error()})
+			continue
+		}
+		results = append(results, faceImageResult{PersonImage: image, HasVector: true})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"person_id": personID, "images": results, "failures": failures})
+}
+
+func identityClient(tagger identity.Tagger) identity.Client {
+	service, ok := tagger.(*identity.TaggerService)
+	if !ok {
+		return nil
+	}
+	return service.Client()
+}
+
+func (s *Server) prepareReferenceImage(ctx context.Context, personID string, image model.PersonImage) (string, error) {
+	if strings.TrimSpace(image.LocalPath) != "" {
+		path := acquisition.NormalizeLocalPath(image.LocalPath)
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			return "", fmt.Errorf("reference image is not a non-empty file")
+		}
+		return filepath.Abs(path)
+	}
+	if strings.TrimSpace(image.SourceURL) == "" {
+		return "", fmt.Errorf("local_path or source_url is required")
+	}
+	client := httpclient.NewDirectClient(30 * time.Second)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, image.SourceURL, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("reference image returned HTTP %d", response.StatusCode)
+	}
+	root := filepath.Join("data", "identity-faces", personID)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	temporary, err := os.CreateTemp(root, "reference-*.image")
+	if err != nil {
+		return "", err
+	}
+	name := temporary.Name()
+	defer os.Remove(name)
+	if _, err := io.CopyN(temporary, io.LimitReader(response.Body, 20<<20), 20<<20); err != nil && err != io.EOF {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	finalPath := strings.TrimSuffix(name, ".image") + filepath.Ext(image.SourceURL)
+	if filepath.Ext(finalPath) == "" {
+		finalPath += ".jpg"
+	}
+	if err := os.Rename(name, finalPath); err != nil {
+		return "", err
+	}
+	return finalPath, nil
+}
+
+func (s *Server) handlePersonRebuild(response http.ResponseWriter, request *http.Request, rawMediaID string) {
+	if s.jobs == nil || s.identityTagger == nil {
+		writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity task service is not configured"))
+		return
+	}
+	mediaID, err := url.PathUnescape(rawMediaID)
+	if err != nil || mediaID == "" {
+		writeError(response, http.StatusNotFound, fmt.Errorf("media not found"))
+		return
+	}
+	task, err := s.jobs.RebuildPersons(mediaID)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, task)
+}
+
+func optionalMovie(movie model.Movie, found bool) any {
+	if !found {
+		return nil
+	}
+	return movie
+}
+
 type fileValidationRequest struct {
 	Paths []string `json:"paths"`
 }
@@ -1144,12 +1815,72 @@ func (s *Server) handleSearch(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusBadRequest, fmt.Errorf("query is required"))
 		return
 	}
+	if strings.TrimSpace(searchRequest.PersonID) == "" && strings.TrimSpace(searchRequest.Person) != "" {
+		if s.identityStore == nil {
+			writeError(response, http.StatusServiceUnavailable, fmt.Errorf("identity metadata store is not configured"))
+			return
+		}
+		person, ok := s.identityStore.FindPerson(searchRequest.Person)
+		if !ok {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("person %q not found", searchRequest.Person))
+			return
+		}
+		if catalog, ok := s.identityStore.(identity.PersonCatalog); ok && catalog.FaceVectorCount(person.ID) == 0 {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("person %q has no completed face vector bank", searchRequest.Person))
+			return
+		}
+		searchRequest.PersonID = person.ID
+	}
 	result, err := s.engine.Search(request.Context(), searchRequest)
 	if err != nil {
 		writeError(response, http.StatusBadGateway, fmt.Errorf("search: %w", err))
 		return
 	}
+	// Attach the true source geometry so the player can ignore broken
+	// SAR/DAR flags in the stream (e.g. 2.2:1 rips flagged DAR 16:9 that
+	// Chromium would otherwise stretch).
+	for index := range result.Results {
+		media, ok := s.store.GetMedia(result.Results[index].MediaID)
+		if !ok {
+			continue
+		}
+		result.Results[index].Width = metadataInt(media.Metadata, "width")
+		result.Results[index].Height = metadataInt(media.Metadata, "height")
+	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func mergeMetadata(existing, incoming map[string]any) map[string]any {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	result := make(map[string]any, len(existing)+len(incoming))
+	for key, value := range existing {
+		result[key] = value
+	}
+	for key, value := range incoming {
+		result[key] = value
+	}
+	return result
+}
+
+// metadataInt reads an integer from decode-produced metadata (numbers arrive
+// as float64) without failing on absent or malformed values.
+func metadataInt(metadata map[string]any, key string) int {
+	switch value := metadata[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	}
+	return 0
 }
 
 func decodeJSON(response http.ResponseWriter, request *http.Request, target any) error {

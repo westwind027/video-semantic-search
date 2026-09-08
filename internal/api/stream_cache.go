@@ -420,32 +420,40 @@ func (c *streamCache) startPrefetch(ctx context.Context, mediaID string, fromInd
 	for index := fromIndex; index < fromIndex+streamCachePrefetchBlocks && index <= lastIndex; index++ {
 		blockIndex := index
 		go func() {
-			if ctx.Err() != nil {
-				return
+			for attempt := 0; attempt < 4; attempt++ {
+				if ctx.Err() != nil {
+					return
+				}
+				key := c.blockKey(mediaID, blockIndex)
+				c.mu.Lock()
+				_, cached := c.blocks[key]
+				_, busy := c.loading[key]
+				c.mu.Unlock()
+				if cached || busy {
+					return
+				}
+				// Bound how many prefetches run at once so the browser's own
+				// requests always find free upstream slots.
+				select {
+				case c.prefetchSlots <- struct{}{}:
+					file, err := c.openBlock(ctx, mediaID, blockIndex, size, fetch, true)
+					<-c.prefetchSlots
+					if err == nil {
+						_ = file.Close()
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+				// A transient busy gate or remote read failure should not
+				// permanently lose a read-ahead block. Retry with a small
+				// bounded backoff; browser reads remain higher priority.
+				select {
+				case <-time.After(time.Duration(attempt+1) * 10 * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
 			}
-			key := c.blockKey(mediaID, blockIndex)
-			c.mu.Lock()
-			_, cached := c.blocks[key]
-			_, busy := c.loading[key]
-			c.mu.Unlock()
-			if cached || busy {
-				return
-			}
-			// Bound how many prefetches run at once so the browser's own
-			// requests always find free upstream slots.
-			select {
-			case c.prefetchSlots <- struct{}{}:
-				defer func() { <-c.prefetchSlots }()
-			case <-ctx.Done():
-				return
-			}
-			file, err := c.openBlock(ctx, mediaID, blockIndex, size, fetch, true)
-			if err != nil {
-				// A busy gate or a canceled context ends this fetch quietly;
-				// anything else just skips the block.
-				return
-			}
-			_ = file.Close()
 		}()
 	}
 }

@@ -127,12 +127,45 @@ func TestEngineSearchAppliesFilters(t *testing.T) {
 	if _, err := engine.Index(context.Background(), model.Media{MediaID: "series", Type: "series", Year: &otherYear, Language: []string{"en"}, Title: "Rain", Scenes: []model.Scene{{Start: 0, End: 1, Caption: "rain"}}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := engine.Index(context.Background(), model.Media{MediaID: "movie-other", Type: "movie", Year: &year, Language: []string{"zh"}, Title: "另一部雨夜", Scenes: []model.Scene{{Start: 0, End: 1, Caption: "雨中"}}}); err != nil {
+		t.Fatal(err)
+	}
 	response, err := engine.Search(context.Background(), model.SearchRequest{Query: "雨中", Type: "movie", Year: &year, Language: "zh"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Results) != 1 || response.Results[0].MediaID != "movie" {
-		t.Fatalf("filtered results = %+v", response.Results)
+	if len(response.Results) != 2 {
+		t.Fatalf("metadata-filtered results = %+v", response.Results)
+	}
+	response, err = engine.Search(context.Background(), model.SearchRequest{Query: "雨中", MediaID: "movie-other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].MediaID != "movie-other" {
+		t.Fatalf("media-filtered results = %+v", response.Results)
+	}
+}
+
+func TestEngineSearchAppliesMultiPersonFilterWithOrSemantics(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	engine := NewEngine(index, fakeEmbedder{}, false)
+	if _, err := engine.Index(context.Background(), model.Media{MediaID: "actors", Title: "actors", Scenes: []model.Scene{
+		{SceneID: "scene-a", Start: 0, End: 1, Caption: "雨中", PersonIDs: []string{"person-a"}},
+		{SceneID: "scene-b", Start: 1, End: 2, Caption: "雨中", PersonIDs: []string{"person-b"}},
+		{SceneID: "scene-c", Start: 2, End: 3, Caption: "雨中", PersonIDs: []string{"person-c"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := engine.Search(context.Background(), model.SearchRequest{Query: "雨中", Mode: "scene", Limit: 10, PersonIDs: []string{"person-a", "person-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 || response.Results[0].Scene.SceneID == "scene-c" || response.Results[1].Scene.SceneID == "scene-c" {
+		t.Fatalf("multi-person results = %+v", response.Results)
 	}
 }
 

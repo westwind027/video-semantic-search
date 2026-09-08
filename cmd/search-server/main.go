@@ -12,6 +12,8 @@ import (
 	"video-semantic-search/internal/alipan"
 	"video-semantic-search/internal/api"
 	"video-semantic-search/internal/embedding"
+	"video-semantic-search/internal/identity"
+	"video-semantic-search/internal/metadata"
 	"video-semantic-search/internal/search"
 	"video-semantic-search/internal/store"
 )
@@ -62,7 +64,50 @@ func main() {
 	processor.RemoteResolver = connector
 	taskFile := envOrDefault("VIDEO_SEARCH_TASK_FILE", "data/acquisition_tasks.json")
 	jobs := acquisition.NewManagerWithTaskFile(processor, engine, taskFile)
+	identityStore, err := identity.NewStoreFromEnv()
+	if err != nil {
+		log.Fatalf("open identity store: %v", err)
+	}
+	defer identityStore.Close()
+	keepReferenceImages := boolOrDefault("IDENTITY_KEEP_REFERENCE_IMAGES", false)
+	if !keepReferenceImages {
+		if cleaner, ok := identityStore.(interface{ ClearRemoteLocalPaths() (int, error) }); ok {
+			if cleared, err := cleaner.ClearRemoteLocalPaths(); err != nil {
+				log.Printf("clear stale remote identity image paths: %v", err)
+			} else if cleared > 0 {
+				log.Printf("cleared %d stale remote identity image paths", cleared)
+			}
+		}
+	}
+	identityClient := identity.NewPythonClient(envOrDefault("IDENTITY_ENDPOINT", "http://127.0.0.1:7003"), durationOrDefault("IDENTITY_TIMEOUT", 2*time.Minute))
+	tmdbClient := metadata.NewTMDBClientFromEnv()
+	var identityTagger identity.Tagger
+	identityEnabled := boolOrDefault("IDENTITY_ENABLED", false)
+	var references *identity.ReferenceIngestor
+	if identityEnabled {
+		tagger := identity.NewTagger(identityStore, identityClient, identity.ConfigFromEnv())
+		referenceConfig := identity.DefaultReferenceConfig()
+		referenceConfig.DownloadRoot = envOrDefault("IDENTITY_REFERENCE_ROOT", referenceConfig.DownloadRoot)
+		referenceConfig.ProxyURL = envOrDefault("IDENTITY_REFERENCE_PROXY_URL", os.Getenv("TMDB_PROXY_URL"))
+		referenceConfig.Workers = intOrDefault("IDENTITY_REFERENCE_WORKERS", referenceConfig.Workers)
+		referenceConfig.KeepLocalFiles = keepReferenceImages
+		if tmdbClient.Configured() {
+			references = identity.NewReferenceIngestor(identityStore, identityClient, referenceConfig)
+		}
+		if boolOrDefault("IDENTITY_LAZY_LOAD", true) && references != nil {
+			maxImagesPerPerson := intOrDefault("IDENTITY_REFERENCE_MAX_PER_PERSON", 8)
+			loader := identity.NewLazyReferenceLoader(identityStore, tmdbClient, references, maxImagesPerPerson)
+			tagger.SetReferenceLoader(loader)
+			log.Printf("identity lazy reference loading enabled: max_images_per_person=%d keep_images=%t", maxImagesPerPerson, referenceConfig.KeepLocalFiles)
+		}
+		identityTagger = tagger
+		jobs.SetIdentityTagger(identityTagger)
+	}
 	server := api.NewServerWithAcquisitionAndAliyun(engine, indexStore, embedder, jobs, frameRoot, connector)
+	server.ConfigureIdentity(identityStore, identityTagger)
+	moviePreparer := identity.NewMoviePreparationService(identityStore, tmdbClient, references, intOrDefault("IDENTITY_MIN_REFERENCES", 5), intOrDefault("IDENTITY_REFERENCE_MAX_PER_PERSON", 8), identityEnabled)
+	jobs.SetMoviePreparer(moviePreparer)
+	server.ConfigureMoviePreparer(moviePreparer)
 
 	address := envOrDefault("VIDEO_SEARCH_ADDR", ":8000")
 	log.Printf("video semantic search listening on %s, index=%s, embedding=%s", address, indexPath, endpoint)

@@ -34,7 +34,7 @@
     button, input, textarea, select { font: inherit; }
     button { cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .55; }
-    .app { max-width: 1440px; margin: 0 auto; padding: 22px 30px 90px; }
+    .app { max-width: 1760px; margin: 0 auto; padding: 28px 36px 110px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 58px; }
     .brand { display: flex; align-items: center; gap: 12px; color: var(--text); text-decoration: none; }
     .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 13px; color: #fff; background: linear-gradient(135deg, #7185ff, #536dfe); box-shadow: 0 8px 18px rgba(83, 109, 254, .25); }
@@ -49,14 +49,14 @@
     .health.bad::before { background: var(--bad); }
     .icon-button { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 1px solid var(--line); border-radius: 13px; color: #58657d; background: rgba(255,255,255,.75); transition: .2s ease; }
     .icon-button:hover { color: var(--accent); border-color: #cbd2ff; background: var(--accent-soft); transform: translateY(-1px); }
-    main { display: grid; gap: 18px; margin-top: 42px; }
-    .search-hero { position: relative; overflow: hidden; padding: clamp(26px, 5vw, 52px); border: 1px solid #e6e9f5; border-radius: 30px; background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(248,249,255,.9)); box-shadow: var(--shadow); }
+    main { display: grid; gap: 22px; margin-top: 48px; }
+    .search-hero { position: relative; min-height: 410px; overflow: visible; padding: clamp(34px, 4vw, 64px); border: 1px solid #e6e9f5; border-radius: 30px; background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(248,249,255,.9)); box-shadow: var(--shadow); }
     .search-hero::after { content: ""; position: absolute; right: -90px; bottom: -120px; width: 330px; height: 330px; border-radius: 50%; background: rgba(129, 142, 255, .09); pointer-events: none; }
     .eyebrow { position: relative; z-index: 1; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
     h1, h2, h3, p { margin-top: 0; }
     h1 { position: relative; z-index: 1; max-width: 740px; margin: 11px 0 10px; color: #202941; font-size: clamp(30px, 5vw, 54px); line-height: 1.08; letter-spacing: -.055em; }
     .hero-copy { position: relative; z-index: 1; max-width: 650px; margin-bottom: 27px; color: var(--muted); font-size: 15px; }
-    .search-form { position: relative; z-index: 1; display: flex; gap: 10px; max-width: 920px; }
+    .search-form { position: relative; z-index: 1; display: flex; gap: 10px; max-width: 1080px; }
     .search-input-wrap { position: relative; flex: 1; }
     .search-input-wrap svg { position: absolute; top: 50%; left: 18px; color: #97a1b5; transform: translateY(-50%); pointer-events: none; }
     input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 13px; outline: 0; color: var(--text); background: var(--surface-solid); transition: .2s ease; }
@@ -72,14 +72,43 @@
     .secondary-button:hover { border-color: #cbd2ff; color: var(--accent); background: var(--accent-soft); }
     .danger-button { border-color: #f1ccd4; color: var(--bad); background: var(--bad-soft); }
     .danger-button:hover { background: #ffe3e9; }
-    .search-controls { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; margin-top: 18px; }
+    .search-controls { position: relative; z-index: 1; display: flex; flex-wrap: nowrap; align-items: center; gap: 12px 18px; margin-top: 18px; }
     .control-label { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
     .control-label strong { color: var(--text); font-variant-numeric: tabular-nums; }
     .control-label input[type=range] { width: 128px; min-height: auto; padding: 0; accent-color: var(--accent); }
+    .person-filter-control { align-items: flex-start; }
+    .person-filter-control > span { padding-top: 10px; }
+    .person-picker { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 270px; min-height: 36px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-solid); }
+    .person-picker:focus-within { border-color: #abb5ff; box-shadow: 0 0 0 4px rgba(83,109,254,.1); }
+    .person-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+    .person-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 4px 7px; border-radius: 7px; color: #4350b7; background: var(--accent-soft); font-size: 11px; line-height: 1.2; }
+    .person-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .person-chip button { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; color: #5965c4; background: transparent; cursor: pointer; }
+    .person-chip button:hover { color: var(--bad); background: #fff; }
+    .person-picker-input { flex: 1 1 90px; width: 90px !important; min-width: 90px; min-height: 28px !important; padding: 4px 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; font-size: 12px; }
+    .person-options { position: absolute; z-index: 30; top: calc(100% + 7px); left: 0; right: 0; max-height: 260px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-solid); box-shadow: var(--shadow-small); }
+    .person-option { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+    .person-option:hover, .person-option:focus-visible { color: var(--accent-dark); background: var(--accent-soft); outline: 0; }
+    .person-option small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .person-empty { padding: 10px; color: var(--muted); font-size: 11px; }
+    .movie-filter-control { align-items: flex-start; }
+    .movie-filter-control > span { padding-top: 10px; }
+    .movie-picker { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 310px; min-height: 36px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-solid); }
+    .movie-picker:focus-within { border-color: #abb5ff; box-shadow: 0 0 0 4px rgba(83,109,254,.1); }
+    .movie-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 7px; border-radius: 7px; color: #4350b7; background: var(--accent-soft); font-size: 11px; line-height: 1.2; }
+    .movie-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .movie-chip button { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; color: #5965c4; background: transparent; cursor: pointer; }
+    .movie-chip button:hover { color: var(--bad); background: #fff; }
+    .movie-picker-input { flex: 1 1 120px; width: 120px !important; min-width: 120px; min-height: 28px !important; padding: 4px 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; font-size: 12px; }
+    .movie-options { position: absolute; z-index: 30; top: calc(100% + 7px); left: 0; right: 0; max-height: 260px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-solid); box-shadow: var(--shadow-small); }
+    .movie-option { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+    .movie-option:hover, .movie-option:focus-visible { color: var(--accent-dark); background: var(--accent-soft); outline: 0; }
+    .movie-option small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .movie-empty { padding: 10px; color: var(--muted); font-size: 11px; }
     .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-muted); }
     .segment { min-height: 32px; padding: 6px 11px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }
     .segment.active { color: var(--accent); background: #fff; box-shadow: 0 2px 7px rgba(50,65,101,.1); }
-    .results-panel { min-height: 300px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-small); }
+    .results-panel { min-height: 340px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-small); }
     .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 15px; margin-bottom: 17px; }
     .section-head h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
     .section-hint { color: var(--muted); font-size: 12px; }
@@ -106,6 +135,9 @@
     .result-body { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 0; padding: 14px 15px 15px; }
     .result-body h3 { display: -webkit-box; overflow: hidden; margin: 0; font-size: 15px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .result-body p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .result-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+    .result-tag { min-height: 25px; padding: 4px 9px; border: 1px solid #d9ddff; border-radius: 99px; color: #5363ca; background: #f5f6ff; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .result-tag:hover, .result-tag:focus-visible { border-color: #abb5ff; color: var(--accent-dark); background: var(--accent-soft); outline: 0; }
     .result-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 2px; color: var(--muted); font-size: 11px; }
     .empty { display: grid; place-items: center; min-height: 210px; padding: 25px; border: 1px dashed #dfe4ee; border-radius: 15px; color: var(--muted); text-align: center; background: rgba(248,250,253,.7); }
     .empty strong { display: block; margin-bottom: 4px; color: #536078; font-size: 14px; }
@@ -216,7 +248,9 @@
     .library-item-meta { color: var(--muted); font-size: 11px; }
     .manage-detail { min-height: 0; overflow-y: auto; padding: 23px 25px 27px; scrollbar-gutter: stable; }
     .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 18px; }
+    .detail-actions { display: flex; flex: none; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     .detail-head > div { min-width: 0; width: 100%; }
+    .detail-head > .detail-actions { width: auto; }
     .detail-head h3 { margin: 0 0 5px; font-size: 21px; letter-spacing: -.04em; }
     .detail-head h3 { overflow-wrap: anywhere; }
     .detail-path { max-width: none; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -275,7 +309,10 @@
     .player-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
     .player-head strong { font-size: 15px; }
     .player-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
-    #player-video { display: block; width: 100%; max-height: 60vh; margin-top: 12px; border-radius: 12px; background: #000; }
+    /* Size the player by the video's own resolution: auto sizing keeps the
+       intrinsic aspect ratio (no stretching), capped by the dialog width and
+       the viewport height; object-fit: contain guards any UA that fills. */
+    #player-video { display: block; width: auto; height: auto; min-width: min(480px, 100%); max-width: 100%; max-height: 60vh; margin: 12px auto 0; border-radius: 12px; background: #000; object-fit: contain; }
     #player-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #f1ccd4; border-radius: 10px; color: var(--bad); background: #fdf3f4; font-size: 12px; line-height: 1.5; }
     .player-controls { display: flex; align-items: center; gap: 9px; margin-top: 12px; }
     .player-button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 9px; color: #43506a; background: var(--surface-muted); cursor: pointer; }
@@ -285,8 +322,25 @@
     .player-volume { flex: none; width: 76px; accent-color: var(--accent); }
     .player-rate { flex: none; padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; color: #43506a; background: #fff; font-size: 11px; }
     .player-hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    dialog.metadata-dialog { width: min(720px, calc(100vw - 28px)); }
+    .metadata-body { max-height: calc(100vh - 170px); }
+    .metadata-summary { margin-bottom: 16px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 14px; background: #fcfdff; }
+    .metadata-summary h3 { margin: 0 0 5px; font-size: 18px; letter-spacing: -.025em; }
+    .metadata-summary p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+    .metadata-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .metadata-facts strong { color: #536078; }
+    .metadata-people { display: grid; gap: 8px; }
+    .metadata-person { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .metadata-person strong { display: block; font-size: 13px; }
+    .metadata-person small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .metadata-person-role { flex: none; max-width: 52%; color: #5363ca; font-size: 11px; text-align: right; }
+    .metadata-empty { padding: 22px; border: 1px dashed #dfe4ee; border-radius: 14px; color: var(--muted); text-align: center; background: #fafbfe; font-size: 12px; }
+    @media (max-width: 1280px) {
+      .search-controls { flex-wrap: wrap; }
+    }
     @media (max-width: 760px) {
       .app { padding: 14px 14px 100px; }
+      .search-hero { min-height: 0; }
       .topbar { gap: 10px; }
       .health { display: none; }
       main { margin-top: 28px; }
@@ -297,6 +351,8 @@
       .library-list { max-height: 205px; border-right: 0; border-bottom: 1px solid var(--line); }
       .manage-detail { min-height: 390px; }
       .result-card.flat .result-body { padding: 10px 13px 14px; }
+      .person-filter-control, .movie-filter-control { width: 100%; }
+      .person-picker, .movie-picker { flex: 1; width: auto; }
       .alipan-login-grid { grid-template-columns: 1fr; justify-items: center; }
       .alipan-login-grid > div:last-child { width: 100%; }
       .alipan-browser-toolbar { align-items: stretch; flex-direction: column; }
@@ -324,7 +380,7 @@
         <h1>搜索你记得的那一帧。</h1>
         <p class="hero-copy">用自然语言描述画面、人物、动作或氛围，在所有已处理视频的关键帧中找到最相关的片段。</p>
         <form id="search-form" class="search-form"><div class="search-input-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="query" class="search-input" required autocomplete="off" placeholder="例如：雨夜里一辆红色汽车经过街道"></div><button class="primary-button search-button">搜索</button></form>
-        <div class="search-controls"><div class="segmented" aria-label="展示策略"><button class="segment active" data-mode="media">按视频归集</button><button class="segment" data-mode="scene">按片段平铺</button></div><label class="control-label">最低相关度 <input id="min-score" type="range" min="0" max="0.95" step="0.05" value="0.30"><strong id="min-score-value">&gt; 0.30</strong></label><label class="control-label">展示数量 <input id="result-limit" type="number" min="1" max="100" value="16"><strong>条</strong></label></div>
+        <div class="search-controls"><div class="segmented" aria-label="展示策略"><button class="segment active" data-mode="media">按视频归集</button><button class="segment" data-mode="scene">按片段平铺</button></div><label class="control-label">最低相关度 <input id="min-score" type="range" min="0" max="0.95" step="0.05" value="0.30"><strong id="min-score-value">&gt; 0.30</strong></label><label class="control-label">展示数量 <input id="result-limit" type="number" min="1" max="100" value="16"><strong>条</strong></label><div class="control-label movie-filter-control"><span>影片</span><div id="movie-picker" class="movie-picker"><div id="movie-chip" class="movie-chip" hidden></div><input id="movie-filter" class="movie-picker-input" type="search" placeholder="搜索已入库影片" autocomplete="off" aria-label="搜索已入库影片" aria-expanded="false" aria-controls="movie-options"><div id="movie-options" class="movie-options" hidden></div></div></div><div class="control-label person-filter-control"><span>演员</span><div id="person-picker" class="person-picker"><div id="person-chips" class="person-chips"></div><input id="person-filter" class="person-picker-input" type="search" placeholder="搜索演员，可多选" autocomplete="off" aria-label="搜索演员" aria-expanded="false" aria-controls="person-options"><div id="person-options" class="person-options" hidden></div></div></div></div>
       </section>
 
       <section class="results-panel"><div class="section-head"><h2>搜索结果</h2><span id="search-message" class="section-hint">输入描述开始搜索</span></div><div id="results" class="results-grid"><div class="empty"><div><strong>还没有搜索结果</strong>搜索结果会按照相关度从高到低排列</div></div></div></section>
@@ -417,10 +473,15 @@
     </div>
   </dialog>
 
+  <dialog id="metadata-dialog" class="metadata-dialog">
+    <div class="dialog-head"><div><h2 id="metadata-title">影片详情</h2><p id="metadata-subtitle"></p></div><button class="close-button" data-close="metadata-dialog" aria-label="关闭">×</button></div>
+    <div id="metadata-content" class="dialog-body metadata-body"></div>
+  </dialog>
+
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
   <script>
-    const stages = { queued: '排队中', parsing: '解析', detecting_scenes: '分镜', extracting_frames: '提取画面', embedding: '生成嵌入', completed: '已完成', failed: '失败', canceled: '已停止' };
-    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, alipanFlow: { tickstep: null, web: null, skippedWeb: false }, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
+    const stages = { queued: '排队中', preparing_metadata: '准备元数据', parsing: '解析', detecting_scenes: '分镜', extracting_frames: '提取画面', embedding: '生成嵌入', completed: '已完成', failed: '失败', canceled: '已停止' };
+    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', personSelections: [], personSearchController: null, personSearchTimer: null, movieSelection: null, movieDetails: new Map(), movieDetailToken: 0, sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, alipanFlow: { tickstep: null, web: null, skippedWeb: false }, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
     const $ = (selector) => document.querySelector(selector);
     const formatSeconds = (value) => { const seconds = Number(value || 0); if (seconds < 60) return `${seconds.toFixed(1)}s`; const minutes = Math.floor(seconds / 60), rest = Math.floor(seconds % 60); return `${minutes}m ${String(rest).padStart(2, '0')}s`; };
     const formatBytes = (value) => { const bytes = Number(value || 0); if (!bytes) return ''; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`; return `${(bytes / 1024 / 1024).toFixed(1)} MB`; };
@@ -525,24 +586,354 @@
     async function listAlipanDirectory(parentFileID, signal) { const items = []; let marker = ''; do { const params = new URLSearchParams({ drive_id: state.alipanDrive, parent_file_id: parentFileID, limit: '100' }); if (marker) params.set('marker', marker); const data = await requestJSON(`/v1/connectors/alipan/files?${params}`, { signal }); items.push(...(data.items || [])); marker = data.next_marker || ''; } while (marker); return items; }
     function enterAlipanFolder(folder) { state.alipanPath.push({ id: folder.file_id, name: folder.name || folder.file_id }); state.alipanParent = folder.file_id; state.alipanMarker = ''; state.alipanFiles = []; state.alipanLoadedDrive = ''; $('#alipan-breadcrumb').textContent = ['根目录', ...state.alipanPath.map(item => item.name)].join(' / '); void loadAlipanFiles(); }
     function leaveAlipanFolder() { if (!state.alipanPath.length) return; state.alipanPath.pop(); state.alipanParent = state.alipanPath.at(-1)?.id || 'root'; state.alipanMarker = ''; state.alipanFiles = []; state.alipanLoadedDrive = ''; $('#alipan-breadcrumb').textContent = ['根目录', ...state.alipanPath.map(item => item.name)].join(' / '); void loadAlipanFiles(); }
-    function alipanTaskRequest(file) { const fingerprint = file.content_hash || `${state.alipanDrive}:${file.file_id}:${file.size || 0}:${file.updated_at || ''}`; return { source: 'alipan', drive_id: file.drive_id || state.alipanDrive, file_id: file.file_id, source_name: file.name, source_fingerprint: fingerprint, type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#alipan-process-mode').value === 'fast' }; }
+    function alipanTaskRequest(file) { const fingerprint = file.content_hash || `${state.alipanDrive}:${file.file_id}:${file.size || 0}:${file.updated_at || ''}`; return { source: 'alipan', drive_id: file.drive_id || state.alipanDrive, file_id: file.file_id, source_name: file.name, source_fingerprint: fingerprint, movie_id: file.movie_id || '', type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#alipan-process-mode').value === 'fast' }; }
     async function submitAcquisitionBatch(items) { const data = await requestJSON('/v1/acquisitions/batch', jsonOptions({ items })); const tasks = data.tasks || []; if (tasks.length) { state.tasks = [...tasks, ...state.tasks.filter(task => !tasks.some(created => created.id === task.id))]; renderTasks(state.tasks); } return data; }
-    async function createAlipanTasks(files, manageButtons = true) { const candidates = files.filter(file => file && file.file_id && isAlipanVideo(file)); if (!candidates.length) { if (manageButtons) $('#alipan-file-message').textContent = '没有可处理的视频文件'; return { created: 0, failed: 0 }; } const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); if (manageButtons) { selectedButton.disabled = true; folderButton.disabled = true; } $('#alipan-file-message').textContent = `正在提交 ${candidates.length} 个云盘视频任务…`; try { let data; try { data = await submitAcquisitionBatch(candidates.map(alipanTaskRequest)); } catch (error) { $('#alipan-file-message').textContent = `批量提交失败：${error.message}`; return { created: 0, failed: candidates.length }; } const failed = data.failures?.length || 0; state.alipanSelected.clear(); renderAlipanFiles(); $('#alipan-file-message').textContent = `已提交 ${data.tasks?.length || 0} 个任务${failed ? `，${failed} 个提交失败` : ''}；任务会排队处理，后续自动完成元信息、I 帧/画面提取和 embedding。`; await refresh(); if (manageButtons && data.tasks?.length) closeDialog($('#alipan-dialog')); return { created: data.tasks?.length || 0, failed }; } finally { if (manageButtons) { selectedButton.disabled = false; folderButton.disabled = false; } } }
+    async function createAlipanTasks(files, manageButtons = true) { const candidates = files.filter(file => file && file.file_id && isAlipanVideo(file)); if (!candidates.length) { if (manageButtons) $('#alipan-file-message').textContent = '没有可处理的视频文件'; return { created: 0, failed: 0 }; } const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); if (manageButtons) { selectedButton.disabled = true; folderButton.disabled = true; } $('#alipan-file-message').textContent = `正在提交 ${candidates.length} 个云盘视频任务…`; try { let data; try { data = await submitAcquisitionBatch(candidates.map(alipanTaskRequest)); } catch (error) { $('#alipan-file-message').textContent = `批量提交失败：${error.message}`; return { created: 0, failed: candidates.length }; } const failed = data.failures?.length || 0; state.alipanSelected.clear(); renderAlipanFiles(); $('#alipan-file-message').textContent = `已提交 ${data.tasks?.length || 0} 个任务${failed ? `，${failed} 个提交失败` : ''}；IMDb/TMDB/人脸库将在 worker 执行时准备。`; await refresh(); if (manageButtons && data.tasks?.length) closeDialog($('#alipan-dialog')); return { created: data.tasks?.length || 0, failed }; } finally { if (manageButtons) { selectedButton.disabled = false; folderButton.disabled = false; } } }
     async function processAlipanFolder(parentFileID = state.alipanParent, folderName = '当前目录') { if (!state.alipanDrive || state.alipanFolderScan) return; const selectedButton = $('#alipan-process-selected'); const folderButton = $('#alipan-process-folder'); const controller = new AbortController(); state.alipanFolderScan = controller; selectedButton.disabled = true; folderButton.disabled = false; folderButton.textContent = '停止扫描'; $('#alipan-file-message').textContent = `正在扫描${folderName}中的视频，发现后会立即创建任务…`; const queue = [{ id: parentFileID, name: folderName }]; const visited = new Set(); let folders = 0; let videos = 0; let failed = 0; try { while (queue.length) { const current = queue.shift(); if (!current.id || visited.has(current.id)) continue; visited.add(current.id); folders++; $('#alipan-file-message').textContent = `正在扫描 ${current.name}（已检查 ${folders} 个目录，已提交 ${videos} 个视频）…`; const items = await listAlipanDirectory(current.id, controller.signal); const currentVideos = items.filter(isAlipanVideo); const result = await createAlipanTasks(currentVideos, false); videos += result.created; failed += result.failed; for (const item of items) { if (String(item.type || '').toLowerCase() === 'folder' && item.file_id && !visited.has(item.file_id)) queue.push({ id: item.file_id, name: item.name || item.file_id }); } } $('#alipan-file-message').textContent = `目录扫描完成：检查 ${folders} 个目录，提交 ${videos} 个视频任务${failed ? `，${failed} 个失败` : ''}。`; } catch (error) { if (error.name === 'AbortError') $('#alipan-file-message').textContent = `已停止目录扫描，已提交 ${videos} 个视频任务。`; else $('#alipan-file-message').textContent = `扫描云盘目录失败：${error.message}`; } finally { state.alipanFolderScan = null; selectedButton.disabled = false; folderButton.disabled = false; folderButton.textContent = '处理当前目录'; await refresh(); } }
+
+    function indexedMedia() {
+      return (state.media || []).filter(media => {
+        const sceneCount = Array.isArray(media?.scenes) ? media.scenes.length : Number(media?.scene_count || 0);
+        return Boolean(media?.media_id) && sceneCount > 0;
+      });
+    }
+    function movieDisplayName(media) {
+      const title = media?.title || media?.original_title || '未命名视频';
+      return media?.year ? `${title} (${media.year})` : title;
+    }
+    function closeMovieOptions() {
+      const options = $('#movie-options');
+      const input = $('#movie-filter');
+      options.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+    }
+    function renderMoviePicker() {
+      const chip = $('#movie-chip');
+      const input = $('#movie-filter');
+      chip.replaceChildren();
+      if (!state.movieSelection) {
+        chip.hidden = true;
+        input.placeholder = '搜索已入库影片';
+        return;
+      }
+      chip.hidden = false;
+      const name = document.createElement('span');
+      name.textContent = movieDisplayName(state.movieSelection);
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = '×';
+      clear.title = '清除影片过滤';
+      clear.setAttribute('aria-label', '清除影片过滤');
+      clear.dataset.movieClear = '1';
+      chip.append(name, clear);
+      input.placeholder = '已选择影片，可更换';
+    }
+    function renderMovieOptions(query = $('#movie-filter').value.trim()) {
+      const root = $('#movie-options');
+      root.replaceChildren();
+      const normalized = String(query || '').trim().toLocaleLowerCase();
+      const selectedID = state.movieSelection?.media_id || '';
+      const available = indexedMedia().filter(media => {
+        if (media.media_id === selectedID) return false;
+        if (!normalized) return true;
+        const searchable = [media.title, media.original_title, media.year, media.media_id].filter(Boolean).join(' ').toLocaleLowerCase();
+        return searchable.includes(normalized);
+      });
+      if (!available.length) {
+        const empty = document.createElement('div');
+        empty.className = 'movie-empty';
+        empty.textContent = normalized ? '没有匹配的已入库影片' : '还没有完成抽帧的影片';
+        root.append(empty);
+      } else {
+        for (const media of available) {
+          const option = document.createElement('button');
+          option.type = 'button';
+          option.className = 'movie-option';
+          option.dataset.movieOption = media.media_id;
+          option.textContent = movieDisplayName(media);
+          const detail = document.createElement('small');
+          detail.textContent = `${Array.isArray(media.scenes) ? media.scenes.length : media.scene_count || 0} 个已索引画面`;
+          option.append(detail);
+          root.append(option);
+        }
+      }
+      root.hidden = false;
+      $('#movie-filter').setAttribute('aria-expanded', 'true');
+    }
+    function selectMovie(mediaID) {
+      const media = indexedMedia().find(item => item.media_id === mediaID);
+      if (!media) return;
+      state.movieSelection = media;
+      $('#movie-filter').value = '';
+      renderMoviePicker();
+      closeMovieOptions();
+      $('#movie-filter').focus();
+    }
+    function clearMovieSelection() {
+      state.movieSelection = null;
+      $('#movie-filter').value = '';
+      renderMoviePicker();
+      closeMovieOptions();
+      $('#movie-filter').focus();
+    }
+    function mediaForResult(item) {
+      return state.media.find(media => media.media_id === item?.media_id) || null;
+    }
+    function metadataMovieID(media, item) {
+      const direct = String(item?.movie_id || media?.movie_id || '').trim();
+      if (direct) return direct;
+      const stored = media?.metadata?.movie_id;
+      return typeof stored === 'string' ? stored.trim() : '';
+    }
+    async function loadMovieDetails(item) {
+      const mediaID = String(item?.media_id || '').trim();
+      const cached = state.movieDetails.get(mediaID);
+      if (cached) return cached;
+      const media = mediaForResult(item);
+      let movieID = metadataMovieID(media, item);
+      if (!movieID) {
+        const fileName = media?.metadata?.remote_name || media?.title || item?.title || '';
+        if (fileName) {
+          const payload = { file_name: fileName };
+          if (media?.year) payload.year = media.year;
+          const resolved = await requestJSON('/v1/metadata/movies/resolve', jsonOptions(payload));
+          if (resolved.found && resolved.movie?.id) movieID = resolved.movie.id;
+        }
+      }
+      const details = { media, movie: null, cast: [], people: [] };
+      if (movieID) {
+        const data = await requestJSON(`/v1/metadata/movies/${escapePath(movieID)}`);
+        details.movie = data.movie || null;
+        details.cast = Array.isArray(data.cast) ? data.cast : [];
+        details.people = Array.isArray(data.people) ? data.people : [];
+      }
+      state.movieDetails.set(mediaID, details);
+      return details;
+    }
+    function metadataEmpty(text) {
+      const empty = document.createElement('div');
+      empty.className = 'metadata-empty';
+      empty.textContent = text;
+      return empty;
+    }
+    function castRoleLabel(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean).join(' / ');
+        if (typeof parsed === 'string') return parsed;
+      } catch (_) {}
+      return raw;
+    }
+    function renderMovieOverview(item, details) {
+      const root = $('#metadata-content');
+      root.replaceChildren();
+      const movie = details.movie || {};
+      const media = details.media || {};
+      const summary = document.createElement('section');
+      summary.className = 'metadata-summary';
+      const title = document.createElement('h3');
+      title.textContent = movie.title || movie.original_title || media.title || item.title || '未命名影片';
+      summary.append(title);
+      const overview = document.createElement('p');
+      overview.textContent = movie.overview || media.description || '暂无影片简介';
+      summary.append(overview);
+      const facts = document.createElement('div');
+      facts.className = 'metadata-facts';
+      const factValues = [];
+      if (movie.year || media.year || item.year) factValues.push(`年份 ${movie.year || media.year || item.year}`);
+      if (movie.original_title && movie.original_title !== title.textContent) factValues.push(`原名 ${movie.original_title}`);
+      if (movie.genres?.length) factValues.push(`类型 ${movie.genres.join(' / ')}`);
+      if (movie.runtime_minutes) factValues.push(`片长 ${movie.runtime_minutes} 分钟`);
+      if (movie.imdb_id) factValues.push(`IMDb ${movie.imdb_id}`);
+      for (const value of factValues) {
+        const fact = document.createElement('span');
+        fact.textContent = value;
+        facts.append(fact);
+      }
+      if (factValues.length) summary.append(facts);
+      root.append(summary);
+    }
+    function renderMoviePeople(item, details) {
+      const root = $('#metadata-content');
+      root.replaceChildren();
+      const peopleByID = new Map((details.people || []).map(person => [person.id, person]));
+      const entries = new Map();
+      for (const cast of details.cast || []) {
+        const personID = String(cast.person_id || '').trim();
+        if (!personID) continue;
+        const person = peopleByID.get(personID);
+        const entry = entries.get(personID) || { person, roles: [] };
+        const role = castRoleLabel(cast.character_name);
+        if (role && !entry.roles.includes(role)) entry.roles.push(role);
+        entries.set(personID, entry);
+      }
+      if (!entries.size) {
+        root.append(metadataEmpty('这部影片暂无可展示的 IMDb 演员关系'));
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'metadata-people';
+      for (const [personID, entry] of entries) {
+        const row = document.createElement('article');
+        row.className = 'metadata-person';
+        const info = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = entry.person?.name || personID;
+        info.append(name);
+        if (entry.person?.imdb_id) {
+          const externalID = document.createElement('small');
+          externalID.textContent = entry.person.imdb_id;
+          info.append(externalID);
+        }
+        const role = document.createElement('span');
+        role.className = 'metadata-person-role';
+        role.textContent = entry.roles.length ? entry.roles.join(' / ') : '演员';
+        row.append(info, role);
+        list.append(row);
+      }
+      root.append(list);
+    }
+    async function openMovieDetail(item, section) {
+      const token = ++state.movieDetailToken;
+      const dialog = $('#metadata-dialog');
+      $('#metadata-title').textContent = section === 'people' ? '人员' : '影片简介';
+      $('#metadata-subtitle').textContent = item.title || '搜索结果影片';
+      const content = $('#metadata-content');
+      content.replaceChildren(metadataEmpty('正在读取 IMDb 影片与演员信息…'));
+      openDialog(dialog);
+      try {
+        const details = await loadMovieDetails(item);
+        if (token !== state.movieDetailToken || !dialog.open) return;
+        if (section === 'people') renderMoviePeople(item, details);
+        else renderMovieOverview(item, details);
+      } catch (error) {
+        if (token !== state.movieDetailToken || !dialog.open) return;
+        content.replaceChildren(metadataEmpty('影片详情读取失败：' + error.message));
+      }
+    }
 
     function renderResults(data) {
       const root = $('#results'); root.replaceChildren(); if (!data.results || !data.results.length) { root.append(emptyState('没有超过当前相关度的结果', '可以降低最低相关度，或换一种画面描述')); return; }
       for (const item of data.results) {
         const scenes = state.mode === 'scene' ? [item.scene] : (item.matched_scenes && item.matched_scenes.length ? item.matched_scenes : [item.scene]); const card = document.createElement('article'); card.className = `result-card ${state.mode === 'scene' ? 'flat' : ''}`; const gallery = document.createElement('div'); gallery.className = 'result-gallery';
         for (const scene of scenes) { const sceneNode = document.createElement('div'); sceneNode.className = 'result-scene'; sceneNode.tabIndex = 0; sceneNode.setAttribute('role', 'button'); sceneNode.title = '从该画面开始播放'; if (scene.preview) { const image = document.createElement('img'); image.src = scene.preview; image.alt = item.title || '视频画面'; image.loading = 'lazy'; sceneNode.append(image); } else { const placeholder = document.createElement('div'); placeholder.className = 'placeholder'; sceneNode.append(placeholder); } const sceneMeta = document.createElement('div'); sceneMeta.className = 'result-scene-meta'; const time = document.createElement('span'); time.textContent = formatSeconds(scene.start); const score = document.createElement('span'); score.className = 'score'; score.textContent = Number(scene.score || item.score || 0).toFixed(3); sceneMeta.append(time, score); sceneNode.append(sceneMeta); const play = document.createElement('div'); play.className = 'scene-play'; play.setAttribute('aria-hidden', 'true'); play.innerHTML = '<svg width="34" height="34" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>'; sceneNode.append(play); sceneNode.addEventListener('click', () => openPlayer(item, scene)); sceneNode.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openPlayer(item, scene); } }); gallery.append(sceneNode); }
-        const body = document.createElement('div'); body.className = 'result-body'; const title = document.createElement('h3'); title.textContent = item.title || '未命名视频'; const caption = document.createElement('p'); caption.textContent = scenes[0]?.caption || '匹配画面'; const meta = document.createElement('div'); meta.className = 'result-meta'; const count = document.createElement('span'); count.textContent = state.mode === 'scene' ? formatSeconds(item.scene?.start) : `${scenes.length} 个命中片段`; const best = document.createElement('span'); best.className = 'score'; best.textContent = `相关度 ${Number(item.score || 0).toFixed(3)}`; meta.append(count, best); body.append(title, caption, meta); card.append(gallery, body); root.append(card);
+        const body = document.createElement('div'); body.className = 'result-body'; const title = document.createElement('h3'); title.textContent = item.title || '未命名视频'; const caption = document.createElement('p'); caption.textContent = scenes[0]?.caption || '匹配画面'; const tags = document.createElement('div'); tags.className = 'result-tags'; const overview = document.createElement('button'); overview.type = 'button'; overview.className = 'result-tag'; overview.textContent = '简介'; overview.addEventListener('click', event => { event.stopPropagation(); void openMovieDetail(item, 'overview'); }); const people = document.createElement('button'); people.type = 'button'; people.className = 'result-tag'; people.textContent = '人员'; people.addEventListener('click', event => { event.stopPropagation(); void openMovieDetail(item, 'people'); }); tags.append(overview, people); const meta = document.createElement('div'); meta.className = 'result-meta'; const count = document.createElement('span'); count.textContent = state.mode === 'scene' ? formatSeconds(item.scene?.start) : `${scenes.length} 个命中片段`; const best = document.createElement('span'); best.className = 'score'; best.textContent = `相关度 ${Number(item.score || 0).toFixed(3)}`; meta.append(count, best); body.append(title, caption, tags, meta); card.append(gallery, body); root.append(card);
       }
     }
-    async function search() { const query = $('#query').value.trim(); if (!query) return; const limit = Math.max(1, Math.min(100, Number($('#result-limit').value) || 16)); const minScore = Number($('#min-score').value) || 0; $('#search-message').textContent = '正在搜索…'; try { const data = await requestJSON('/v1/search', jsonOptions({ query, limit, min_score: minScore, mode: state.mode })); $('#search-message').textContent = `找到 ${data.results.length} ${state.mode === 'scene' ? '个片段' : '部视频'} · 相关度 > ${minScore.toFixed(2)}`; renderResults(data); } catch (error) { $('#search-message').textContent = `搜索失败：${error.message}`; } }
+    function closePersonOptions() { const options = $('#person-options'); const input = $('#person-filter'); options.hidden = true; input.setAttribute('aria-expanded', 'false'); }
+    function renderPersonPicker() {
+      const root = $('#person-chips');
+      root.replaceChildren();
+      for (const person of state.personSelections) {
+        const chip = document.createElement('span');
+        chip.className = 'person-chip';
+        const name = document.createElement('span');
+        name.textContent = person.name;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.title = '移除 ' + person.name;
+        remove.setAttribute('aria-label', '移除 ' + person.name);
+        remove.dataset.personRemove = person.id;
+        chip.append(name, remove);
+        root.append(chip);
+      }
+    }
+    function personIdentityKey(person) {
+      const imdbID = String(person?.imdb_id || '').trim().toLowerCase();
+      if (imdbID) return 'imdb:' + imdbID;
+      const tmdbID = Number(person?.tmdb_id || 0);
+      if (tmdbID > 0) return 'tmdb:' + tmdbID;
+      const name = String(person?.normalized_name || person?.name || person?.id || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      return 'name:' + name;
+    }
+    function renderPersonOptions(people, query) {
+      const root = $('#person-options');
+      root.replaceChildren();
+      const selected = new Set(state.personSelections.map(person => person.id));
+      const seenIdentities = new Set();
+      const available = (people || []).filter(person => {
+        if (!person?.id || selected.has(person.id)) return false;
+        const key = personIdentityKey(person);
+        if (seenIdentities.has(key)) return false;
+        seenIdentities.add(key);
+        return true;
+      });
+      if (!available.length) {
+        const empty = document.createElement('div');
+        empty.className = 'person-empty';
+        empty.textContent = query ? '没有找到匹配的本地演员' : '输入姓名搜索本地演员';
+        root.append(empty);
+      } else {
+        for (const person of available) {
+          const option = document.createElement('button');
+          option.type = 'button';
+          option.className = 'person-option';
+          option.dataset.personOption = person.id;
+          option.dataset.personName = person.name || person.id;
+          option.textContent = person.name || person.id;
+          if (person.imdb_id) {
+            const externalID = document.createElement('small');
+            externalID.textContent = person.imdb_id;
+            option.append(externalID);
+          }
+          root.append(option);
+        }
+      }
+      root.hidden = false;
+      $('#person-filter').setAttribute('aria-expanded', 'true');
+    }
+    async function loadPersonOptions(query = $('#person-filter').value.trim()) {
+      if (state.personSearchController) state.personSearchController.abort();
+      const controller = new AbortController();
+      state.personSearchController = controller;
+      const options = $('#person-options');
+      options.replaceChildren();
+      const loading = document.createElement('div');
+      loading.className = 'person-empty';
+      loading.textContent = '正在搜索本地演员…';
+      options.append(loading);
+      options.hidden = false;
+      $('#person-filter').setAttribute('aria-expanded', 'true');
+      try {
+        const suffix = query ? '&q=' + encodeURIComponent(query) : '';
+        const people = await requestJSON('/v1/metadata/persons?limit=100' + suffix, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        renderPersonOptions(people, query);
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        options.replaceChildren();
+        const failure = document.createElement('div');
+        failure.className = 'person-empty';
+        failure.textContent = '演员搜索失败：' + error.message;
+        options.append(failure);
+      }
+    }
+    function schedulePersonSearch() {
+      clearTimeout(state.personSearchTimer);
+      state.personSearchTimer = setTimeout(() => { void loadPersonOptions(); }, 180);
+    }
+    function selectPerson(id, name) {
+      if (!id || state.personSelections.some(person => person.id === id)) return;
+      state.personSelections.push({ id, name: name || id });
+      renderPersonPicker();
+      $('#person-filter').value = '';
+      closePersonOptions();
+      $('#person-filter').focus();
+    }
+    function removePerson(id) {
+      state.personSelections = state.personSelections.filter(person => person.id !== id);
+      renderPersonPicker();
+      $('#person-filter').focus();
+    }
+    async function search() { const query = $('#query').value.trim(); if (!query) return; const limit = Math.max(1, Math.min(100, Number($('#result-limit').value) || 16)); const minScore = Number($('#min-score').value) || 0; const people = state.personSelections; const movie = state.movieSelection; const payload = { query, limit, min_score: minScore, mode: state.mode }; if (movie?.media_id) payload.media_id = movie.media_id; if (people.length) payload.person_ids = people.map(person => person.id); $('#search-message').textContent = '正在搜索…'; try { const data = await requestJSON('/v1/search', jsonOptions(payload)); const movieLabel = movie ? ` · 影片 ${movieDisplayName(movie)}` : ''; const personLabel = people.length ? ` · 演员 ${people.map(person => person.name).join('、')}` : ''; $('#search-message').textContent = `找到 ${data.results.length} ${state.mode === 'scene' ? '个片段' : '部视频'} · 相关度 > ${minScore.toFixed(2)}${movieLabel}${personLabel}`; renderResults(data); } catch (error) { $('#search-message').textContent = `搜索失败：${error.message}`; } }
 
     const formatClock = (value) => { const seconds = Math.max(0, Math.floor(Number(value) || 0)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; };
     // 从搜索结果画面打开播放器，直接跳到该画面抽帧的真实时间。
     let activeHls = null;
+    let playerAspectOverride = null; // 源文件真实宽高比（来自索引元数据），用于覆盖错误的 SAR/DAR
     function destroyHls() { if (activeHls) { try { activeHls.destroy(); } catch (_) {} activeHls = null; } }
 
     function openPlayer(item, scene) {
@@ -553,6 +944,14 @@
       const startAt = Number(scene.preview_time) || Number(scene.start) || 0;
       $('#player-subtitle').textContent = `起播 ${formatClock(startAt)} – ${formatClock(scene.end)} · 来自匹配画面`;
       $('#player-error').hidden = true;
+      // 部分片源的 SAR/DAR 元数据是错的（如 Tenet 的 2.2:1 画面被标成 DAR
+      // 16:9），Chromium 会照着它把画面拉变形，且 videoWidth/videoHeight
+      // 也被 SAR 修正过、不能信。这里用索引里源文件的真实分辨率作为宽高
+      // 比锚点：不一致时用 aspect-ratio 锁定真实比例并用 object-fit: fill
+      // 抵消浏览器按错误 SAR 预缩放的位图。
+      playerAspectOverride = Number(item.width) > 0 && Number(item.height) > 0 ? Number(item.width) / Number(item.height) : null;
+      if (playerAspectOverride) video.style.aspectRatio = String(playerAspectOverride); else video.style.aspectRatio = '';
+      video.style.objectFit = '';
       openDialog($('#player-dialog'));
       // 云盘视频优先走云端转码 HLS：CDN 直连不限速、H.264 浏览器原生解码、
       // HLS 支持进度条任意跳转。转码不可用时回退到原文件 Range 流。
@@ -621,6 +1020,21 @@
         if (video.duration && Number.isFinite(video.duration)) $('#player-seek').value = String(Math.round(video.currentTime / video.duration * 1000));
       });
       video.addEventListener('loadedmetadata', () => { $('#player-duration').textContent = formatClock(video.duration); });
+      const syncGeometry = () => {
+        if (!(video.videoWidth > 0 && video.videoHeight > 0)) return;
+        if (!playerAspectOverride) { video.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`; video.style.objectFit = ''; return; }
+        const reported = video.videoWidth / video.videoHeight;
+        if (Math.abs(playerAspectOverride - reported) / reported > 0.02) {
+          // 浏览器的显示比例和源文件真实比例不一致：锁真实比例 + fill
+          // 拉伸回原始位图几何（抵消 SAR 预缩放，实测逐像素比例一致）。
+          video.style.aspectRatio = String(playerAspectOverride);
+          video.style.objectFit = 'fill';
+        } else {
+          video.style.objectFit = '';
+        }
+      };
+      video.addEventListener('loadedmetadata', syncGeometry);
+      video.addEventListener('resize', syncGeometry);
       $('#player-seek').addEventListener('input', event => { if (!video.duration || !Number.isFinite(video.duration)) return; video.currentTime = Number(event.target.value) / 1000 * video.duration; });
       $('#player-volume').addEventListener('input', event => { video.volume = Number(event.target.value); video.muted = video.volume === 0; });
       $('#player-rate').addEventListener('change', event => { video.playbackRate = Number(event.target.value) || 1; });
@@ -629,6 +1043,8 @@
       $('#player-dialog').addEventListener('close', () => {
         destroyHls();
         video.pause(); video.removeAttribute('src'); video.load();
+        video.style.aspectRatio = ''; video.style.objectFit = '';
+        playerAspectOverride = null;
         $('#player-seek').value = '0'; $('#player-current').textContent = '0:00'; $('#player-duration').textContent = '0:00';
       });
       syncPlayState();
@@ -711,7 +1127,7 @@
         list.append(item);
       }
     }
-    async function refresh() { const token = ++state.refreshToken; const [healthResult, tasksResult, mediaResult] = await Promise.allSettled([requestJSON('/healthz'), requestJSON('/v1/acquisitions'), requestJSON('/v1/media')]); if (token !== state.refreshToken) return; if (tasksResult.status === 'fulfilled') renderTasks(tasksResult.value); if (healthResult.status === 'fulfilled') { const health = healthResult.value; setHealth(`${health.scene_count || 0} 个画面已索引`, health.status === 'ok' && health.embedding_status === 'ok', health.status !== 'ok'); } else { setHealth('服务部分不可用', false, true); } if (mediaResult.status === 'fulfilled') { state.media = mediaResult.value; if ($('#manage-dialog').open) renderLibrary(); } }
+    async function refresh() { const token = ++state.refreshToken; const [healthResult, tasksResult, mediaResult] = await Promise.allSettled([requestJSON('/healthz'), requestJSON('/v1/acquisitions'), requestJSON('/v1/media')]); if (token !== state.refreshToken) return; if (tasksResult.status === 'fulfilled') renderTasks(tasksResult.value); if (healthResult.status === 'fulfilled') { const health = healthResult.value; setHealth(`${health.scene_count || 0} 个画面已索引`, health.status === 'ok' && health.embedding_status === 'ok', health.status !== 'ok'); } else { setHealth('服务部分不可用', false, true); } if (mediaResult.status === 'fulfilled') { state.media = Array.isArray(mediaResult.value) ? mediaResult.value : []; if (state.movieSelection && !indexedMedia().some(media => media.media_id === state.movieSelection.media_id)) { state.movieSelection = null; $('#movie-filter').value = ''; renderMoviePicker(); closeMovieOptions(); } else if (!$('#movie-options').hidden) { renderMovieOptions(); } if ($('#manage-dialog').open) renderLibrary(); } }
 
     function addFile(path, name, note = '') { const cleanPath = String(path || '').trim(); const cleanName = String(name || cleanPath.split(/[\\/]/).pop() || '未命名文件'); const duplicate = state.files.find(file => (cleanPath && file.path === cleanPath) || (!cleanPath && file.name === cleanName)); if (duplicate) return; state.files.push({ path: cleanPath, name: cleanName, note, size: 0, available: false, status: 'pending' }); renderQueue(); }
     function updateSourceSummary(text, active = true) { const node = $('#source-summary'); node.textContent = text; node.classList.toggle('has-source', active); }
@@ -779,13 +1195,24 @@
     function renderQueue() { const root = $('#file-queue'); $('#queue-count').textContent = `${state.files.length} 个`; root.replaceChildren(); if (!state.files.length) { const empty = document.createElement('div'); empty.className = 'queue-empty'; empty.textContent = '还没有文件\n添加文件或扫描目录后会显示可用性'; root.append(empty); return; } for (const file of state.files) { const row = document.createElement('div'); row.className = 'file-row'; const info = document.createElement('div'); info.className = 'file-info'; const name = document.createElement('div'); name.className = 'file-name'; name.textContent = file.name; const path = document.createElement('div'); path.className = 'file-path'; path.textContent = file.path || file.note || '需要粘贴服务端绝对路径'; info.append(name, path); const status = document.createElement('span'); status.className = `file-status ${file.available ? 'ok' : file.status === 'invalid' ? 'bad' : ''}`; status.textContent = file.available ? `可用${file.size ? ` · ${formatBytes(file.size)}` : ''}` : file.status === 'invalid' ? '不可用' : '待检查'; const remove = document.createElement('button'); remove.className = 'remove-file'; remove.textContent = '移除'; remove.dataset.removeFile = file.path || file.name; row.append(info, status, remove); root.append(row); } }
     async function validateFiles() { const candidates = state.files.filter(file => file.path); if (!candidates.length) { $('#upload-message').textContent = '请先输入并检查一个文件路径'; return; } $('#validate-files').disabled = true; $('#upload-message').textContent = '正在检查文件…'; try { const data = await requestJSON('/v1/files/validate', jsonOptions({ paths: candidates.map(file => file.path) })); for (const checked of data.files || []) { const file = state.files.find(item => item.path === checked.path || item.path === checked.path.replace(/\\/g, '/')); if (file) Object.assign(file, { path: checked.path, name: checked.name, size: checked.size, available: checked.available, status: checked.available ? 'valid' : 'invalid', note: checked.error || '' }); } renderQueue(); const valid = state.files.filter(file => file.available).length; $('#upload-message').textContent = `${valid} 个文件可处理${valid < state.files.length ? `，${state.files.length - valid} 个需要修正` : ''}`; } catch (error) { $('#upload-message').textContent = `检查失败：${error.message}`; } finally { $('#validate-files').disabled = false; } }
     async function scanDirectory() { const directory = state.sourceDirectoryPath.trim(); if (!directory || state.sourceKind !== 'directory') { const message = '请先输入并检查一个目录路径'; setDirectorySummary(message, true); updateSourceSummary('尚未确认可扫描的目录', false); $('#upload-message').textContent = message; return; } $('#scan-directory').disabled = true; setDirectorySummary('正在扫描：' + directory); $('#upload-message').textContent = '正在扫描目录…'; try { const data = await requestJSON('/v1/files/scan', jsonOptions({ directory, recursive: $('#recursive-scan').checked })); state.sourceKind = 'directory'; state.sourceDirectoryPath = data.directory || directory; state.files = (data.files || []).map(file => ({ ...file, status: file.available ? 'valid' : 'invalid', note: file.error || '', selected: true })); updateSourceSummary('目录：' + state.sourceDirectoryPath + ' · 发现 ' + state.files.length + ' 个视频文件'); renderDirectoryTools(); renderQueue(); $('#upload-message').textContent = `发现 ${state.files.length} 个视频文件，其中 ${state.files.filter(file => file.available).length} 个可处理`; } catch (error) { setDirectorySummary('扫描失败：' + error.message, true); $('#upload-message').textContent = `扫描失败：${error.message}`; } finally { $('#scan-directory').disabled = false; } }
-    async function startImport() { const valid = state.files.filter(file => file.available && file.selected !== false); if (!valid.length) { $('#upload-message').textContent = state.files.some(file => file.available) ? '请先选择要处理的文件' : '请先检查文件可用性'; return; } $('#start-import').disabled = true; $('#upload-message').textContent = `正在提交 ${valid.length} 个任务…`; try { let data; try { data = await submitAcquisitionBatch(valid.map(file => ({ local_path: file.path, title: valid.length === 1 ? $('#import-title').value.trim() : '', type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#import-mode').value === 'fast' }))); } catch (error) { $('#upload-message').textContent = `提交失败：${error.message}`; return; } const failures = data.failures || []; for (const failure of failures) { const file = valid[failure.index]; if (file) { file.status = 'invalid'; file.note = failure.error; } } renderQueue(); const created = data.tasks?.length || 0; $('#upload-message').textContent = `已提交 ${created} 个任务${failures.length ? `，${failures.length} 个提交失败` : ''}，任务会排队处理，可在右下角查看进度`; if (created) { await refresh(); setTimeout(() => closeDialog($('#upload-dialog')), 350); } } finally { $('#start-import').disabled = false; } }
+    async function startImport() { const valid = state.files.filter(file => file.available && file.selected !== false); if (!valid.length) { $('#upload-message').textContent = state.files.some(file => file.available) ? '请先选择要处理的文件' : '请先检查文件可用性'; return; } $('#start-import').disabled = true; const titleOverride = valid.length === 1 ? $('#import-title').value.trim() : ''; $('#upload-message').textContent = `正在提交 ${valid.length} 个任务…`; try { let data; try { data = await submitAcquisitionBatch(valid.map(file => ({ local_path: file.path, source_name: file.name, movie_id: file.movie_id || '', title: valid.length === 1 ? titleOverride : '', type: 'movie', sample_interval: 30, scene_threshold: 0.35, fast_mode: $('#import-mode').value === 'fast' }))); } catch (error) { $('#upload-message').textContent = `提交失败：${error.message}`; return; } const failures = data.failures || []; for (const failure of failures) { const file = valid[failure.index]; if (file) { file.status = 'invalid'; file.note = failure.error; } } renderQueue(); const created = data.tasks?.length || 0; $('#upload-message').textContent = `已提交 ${created} 个任务${failures.length ? `，${failures.length} 个提交失败` : ''}；IMDb/TMDB/人脸库将在 worker 执行时准备，可在右下角查看进度`; if (created) { await refresh(); setTimeout(() => closeDialog($('#upload-dialog')), 350); } } finally { $('#start-import').disabled = false; } }
 
     function renderLibrary() { const root = $('#library-list'); root.replaceChildren(); if (!state.media.length) { root.append(emptyState('还没有已处理文件', '在上传窗口添加第一个视频')); $('#manage-detail').replaceChildren(emptyState('选择一个视频', '查看已提取的关键帧')); return; } for (const media of state.media) { const item = document.createElement('button'); item.className = `library-item ${state.selectedMedia === media.media_id ? 'active' : ''}`; item.dataset.mediaId = media.media_id; const title = document.createElement('div'); title.className = 'library-item-title'; title.textContent = media.title || '未命名视频'; const meta = document.createElement('div'); meta.className = 'library-item-meta'; meta.textContent = `${media.scenes?.length || media.scene_count || 0} 个关键帧 · ${formatSeconds(media.duration)}`; item.append(title, meta); root.append(item); } if (!state.selectedMedia || !state.media.some(media => media.media_id === state.selectedMedia)) state.selectedMedia = state.media[0].media_id; renderManageDetail(state.media.find(media => media.media_id === state.selectedMedia)); }
     function renderManageDetail(media) { const root = $('#manage-detail'); root.replaceChildren(); if (!media) { root.append(emptyState('选择一个视频', '查看已提取的关键帧')); return; } const head = document.createElement('div'); head.className = 'detail-head'; const info = document.createElement('div'); const title = document.createElement('h3'); title.textContent = media.title || '未命名视频'; const path = document.createElement('div'); path.className = 'detail-path'; const isRemote = media.metadata?.source === 'aliyun_drive'; const remoteName = media.metadata?.remote_name || media.title || '云盘视频'; path.title = media.metadata?.local_path || remoteName; path.textContent = media.metadata?.local_path || (isRemote ? `阿里云盘 · ${remoteName}` : '本地文件'); const stats = document.createElement('div'); stats.className = 'detail-stats'; stats.textContent = `${media.scenes?.length || 0} 个关键帧 · ${formatSeconds(media.duration)} · ${media.metadata?.format || 'video'}`; info.append(title, path, stats); const remove = document.createElement('button'); remove.className = 'danger-button'; remove.textContent = '删除整文件'; remove.dataset.deleteMedia = media.media_id; head.append(info, remove); root.append(head); const frames = document.createElement('div'); frames.className = 'frame-grid'; for (const scene of (media.scenes || [])) { const card = document.createElement('article'); card.className = 'frame-card'; if (scene.preview) { const image = document.createElement('img'); image.src = scene.preview; image.alt = `${media.title} ${formatSeconds(scene.start)}`; image.loading = 'lazy'; card.append(image); } else { const placeholder = document.createElement('div'); placeholder.className = 'placeholder'; card.append(placeholder); } const body = document.createElement('div'); body.className = 'frame-card-body'; const time = document.createElement('div'); time.className = 'frame-time'; time.textContent = `${formatSeconds(scene.start)} – ${formatSeconds(scene.end)}`; const id = document.createElement('div'); id.className = 'frame-id'; id.textContent = `scene ${scene.scene_id || 'unknown'}`; const deleteButton = document.createElement('button'); deleteButton.className = 'danger-button'; deleteButton.textContent = '删除关键帧与向量'; deleteButton.dataset.deleteScene = scene.scene_id; deleteButton.dataset.mediaId = media.media_id; if (!scene.scene_id) deleteButton.disabled = true; body.append(time, id, deleteButton); card.append(body); frames.append(card); } if (!media.scenes?.length) frames.append(emptyState('暂无关键帧', '这个媒体的场景索引可能已被全部删除')); root.append(frames); }
     async function deleteScene(mediaId, sceneId) { if (!sceneId || !confirm('删除该关键帧及对应向量？')) return; try { await requestJSON(`/v1/media/${escapePath(mediaId)}/scenes/${escapePath(sceneId)}`, { method: 'DELETE' }); await refresh(); renderLibrary(); } catch (error) { alert(`删除失败：${error.message}`); } }
     async function deleteMedia(mediaId) { if (!confirm('删除整个文件的索引、关键帧和对应向量？原视频不会被删除。')) return; try { await requestJSON(`/v1/media/${escapePath(mediaId)}`, { method: 'DELETE' }); state.selectedMedia = null; await refresh(); renderLibrary(); } catch (error) { alert(`删除失败：${error.message}`); } }
 
+    $('#person-filter').addEventListener('focus', () => { void loadPersonOptions(); });
+    $('#person-filter').addEventListener('input', schedulePersonSearch);
+    $('#person-filter').addEventListener('keydown', event => { if (event.key === 'Escape') { closePersonOptions(); return; } if (event.key !== 'Enter') return; const first = $('#person-options [data-person-option]'); if (!first) return; event.preventDefault(); selectPerson(first.dataset.personOption, first.dataset.personName); });
+    $('#person-options').addEventListener('click', event => { const option = event.target.closest('[data-person-option]'); if (option) selectPerson(option.dataset.personOption, option.dataset.personName); });
+    $('#person-chips').addEventListener('click', event => { const remove = event.target.closest('[data-person-remove]'); if (remove) { event.preventDefault(); removePerson(remove.dataset.personRemove); } });
+    $('#movie-filter').addEventListener('focus', () => renderMovieOptions());
+    $('#movie-filter').addEventListener('input', event => renderMovieOptions(event.target.value));
+    $('#movie-filter').addEventListener('keydown', event => { if (event.key === 'Escape') { closeMovieOptions(); return; } if (event.key !== 'Enter') return; const first = $('#movie-options [data-movie-option]'); if (!first) return; event.preventDefault(); selectMovie(first.dataset.movieOption); });
+    $('#movie-options').addEventListener('click', event => { const option = event.target.closest('[data-movie-option]'); if (option) selectMovie(option.dataset.movieOption); });
+    $('#movie-chip').addEventListener('click', event => { const clear = event.target.closest('[data-movie-clear]'); if (clear) { event.preventDefault(); clearMovieSelection(); } });
+    document.addEventListener('click', event => { if (!$('#person-picker').contains(event.target)) closePersonOptions(); if (!$('#movie-picker').contains(event.target)) closeMovieOptions(); });
     $('#search-form').addEventListener('submit', (event) => { event.preventDefault(); search(); }); document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => { state.mode = button.dataset.mode; localStorage.setItem('framefind-mode', state.mode); document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button)); if ($('#query').value.trim()) search(); })); document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item.dataset.mode === state.mode));
     async function stopSelectedTasks() {
       const ids = state.tasks.filter(task => state.selectedTasks.has(task.id) && !terminal(task)).map(task => task.id);
@@ -872,10 +1299,14 @@
         const path = document.createElement('div');
         path.className = 'file-path';
         path.textContent = file.path || file.note || '需要粘贴服务端绝对路径';
+        if (file.metadata_note && file.metadata_note !== file.note) {
+          path.textContent += ' · ' + file.metadata_note;
+        }
         info.append(name, path);
         const status = document.createElement('span');
-        status.className = 'file-status ' + (file.available ? 'ok' : file.status === 'invalid' ? 'bad' : '');
-        status.textContent = file.available ? '可用' + (file.size ? ' · ' + formatBytes(file.size) : '') : file.status === 'invalid' ? '不可用' : '待检查';
+        const preparationLabel = file.metadata_ready ? ' · IMDb/TMDB/人脸库已完成' : file.metadata_status ? ' · ' + file.metadata_status : '';
+        status.className = 'file-status ' + (file.available && file.metadata_ready ? 'ok' : file.status === 'invalid' ? 'bad' : '');
+        status.textContent = file.available ? '可用' + (file.size ? ' · ' + formatBytes(file.size) : '') + preparationLabel : file.status === 'invalid' ? '不可用' : '待检查';
         const remove = document.createElement('button');
         remove.className = 'remove-file';
         remove.type = 'button';
@@ -902,6 +1333,24 @@
       } catch (error) {
         button.textContent = oldText;
         alert('提交向量重建失败：' + error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function rebuildMediaPersons(mediaID, button) {
+      button.disabled = true;
+      const oldText = button.textContent;
+      button.textContent = '正在提交…';
+      try {
+        const task = await requestJSON('/v1/media/' + escapePath(mediaID) + '/persons/rebuild', { method: 'POST' });
+        state.tasks = [task, ...state.tasks.filter(item => item.id !== task.id)];
+        renderTasks(state.tasks);
+        button.textContent = '已加入队列';
+        setTimeout(() => { if (button.isConnected) button.textContent = oldText; }, 1800);
+      } catch (error) {
+        button.textContent = oldText;
+        alert('提交人物标签重建失败：' + error.message);
       } finally {
         button.disabled = false;
       }
@@ -934,7 +1383,15 @@
       profileNote.className = 'embedding-profile-note';
       profileNote.textContent = '当前向量：' + modality + ' · ' + profile;
       info.append(title, path, stats, profileNote);
-      head.append(info);
+      const actions = document.createElement('div');
+      actions.className = 'detail-actions';
+      const personRebuild = document.createElement('button');
+      personRebuild.type = 'button';
+      personRebuild.className = 'secondary-button';
+      personRebuild.textContent = '重建人物标签';
+      personRebuild.dataset.rebuildPersons = media.media_id;
+      actions.append(personRebuild);
+      head.append(info, actions);
       root.append(head);
       const frames = document.createElement('div');
       frames.className = 'frame-grid';
@@ -999,6 +1456,8 @@
     $('#manage-detail').addEventListener('click', event => {
       const rebuild = event.target.closest('[data-rebuild-media]');
       if (rebuild) { void rebuildMediaEmbeddings(rebuild.dataset.rebuildMedia, rebuild); return; }
+      const personRebuild = event.target.closest('[data-rebuild-persons]');
+      if (personRebuild) { void rebuildMediaPersons(personRebuild.dataset.rebuildPersons, personRebuild); return; }
     });
     function renderLibrary() {
       const root = $('#library-list');

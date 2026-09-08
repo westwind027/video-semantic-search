@@ -30,6 +30,7 @@ type Request struct {
 	FileID            string  `json:"file_id,omitempty"`
 	SourceName        string  `json:"source_name,omitempty"`
 	SourceFingerprint string  `json:"source_fingerprint,omitempty"`
+	MovieID           string  `json:"movie_id,omitempty"`
 	Title             string  `json:"title,omitempty"`
 	Type              string  `json:"type,omitempty"`
 	SampleInterval    float64 `json:"sample_interval,omitempty"`
@@ -78,10 +79,12 @@ type Stage string
 
 const (
 	StageQueued     Stage = "queued"
+	StagePreparing  Stage = "preparing_metadata"
 	StageParsing    Stage = "parsing"
 	StageDetecting  Stage = "detecting_scenes"
 	StageExtracting Stage = "extracting_frames"
 	StageEmbedding  Stage = "embedding"
+	StageIdentity   Stage = "identifying_faces"
 	StageCompleted  Stage = "completed"
 	StageFailed     Stage = "failed"
 	StageCanceled   Stage = "canceled"
@@ -410,6 +413,9 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 		"frame_extracted_count":    len(scenes) - len(frameSummary.Failures),
 		"frame_extraction_methods": frameSummary.Methods,
 	}
+	if strings.TrimSpace(request.MovieID) != "" {
+		metadata["movie_id"] = strings.TrimSpace(request.MovieID)
+	}
 	if len(frameSummary.Sources) > 0 {
 		metadata["frame_extraction_sources"] = frameSummary.Sources
 	}
@@ -459,6 +465,7 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 	}
 	media := model.Media{
 		MediaID:  mediaID,
+		MovieID:  strings.TrimSpace(request.MovieID),
 		Type:     typeName,
 		Title:    title,
 		Duration: &duration,

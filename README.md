@@ -65,6 +65,58 @@ scripts/watch_wemm_download.sh --interval 10
 
 首次启动会从 Hugging Face 下载 WEMM 权重并复用 `HF_HOME` 缓存；官方模型支持文本、图片、视频的统一向量。本次精度测试使用模型卡示例的 2048 维输出，并为每个图片 document 加上统一的 `Represent this image.` 提示词。
 
+## 人脸识别增强 MVP
+
+人脸身份链路与 WeMM 分离：Go 管理 Movie/Cast、reference face、阈值和 Scene 标签，Python Identity Service 只负责 InsightFace `buffalo_l` 的检测与 512 维 embedding。安装时复用现有 Hunyuan3D 环境，不重复安装 CUDA/Torch：
+
+```bash
+/home/zephyr/go/src/hunyuan3d/.venv/bin/python -m pip install -r python/requirements-identity.txt
+```
+
+启动身份服务：
+
+```bash
+IDENTITY_PORT=7003 scripts/start_identity.sh
+```
+
+然后重启 Go 服务并打开自动打标：
+
+```bash
+IDENTITY_ENABLED=true IDENTITY_ENDPOINT=http://127.0.0.1:7003 \
+  VIDEO_SEARCH_IDENTITY_DB=data/identity.db \
+  VIDEO_SEARCH_IDENTITY_FILE=data/identity.json \
+  .build/search-server
+```
+
+可通过 `POST /v1/metadata/movies`、`POST /v1/metadata/movies/{id}/cast` 手工建立电影与演员 cast，也可配置 `TMDB_API_KEY` 后调用 `POST /v1/metadata/movies/{id}/sync`。正式入库任务先立即入队，worker 领取后使用与 `POST /v1/metadata/movies/prepare` 相同的准备服务：按文件名/标题定位 IMDb 影片，必要时同步完整 TMDB cast/profile，启用 Identity 时继续补齐去重演员的人脸向量；未 `ready` 的任务会记录失败原因，不阻塞批量提交。reference 图片使用 `POST /v1/persons/{id}/faces`，支持服务端本地路径或 URL；识别视频可调用 `POST /v1/media/{id}/persons/rebuild`。搜索页面的演员候选只来自已有 face vector 的去重 Person；搜索请求增加 `person` 或 `person_id` 后，会先按 `Scene.person_ids` 过滤，再做 WeMM 语义排序。
+
+`IDENTITY_BACKEND=hash scripts/start_identity.sh` 只用于离线验证 HTTP 链路，输出的向量不具备真实人脸识别能力。完整设计、阈值原则和后续 benchmark 见 [`docs/face-recognition-mvp-plan.md`](docs/face-recognition-mvp-plan.md)，当前交接状态见 [`docs/handoff.md`](docs/handoff.md)。
+
+### IMDb 电影元数据与演员人脸库
+
+下载 IMDb 官方 bulk TSV 快照，并按 IMDb ID 将完整电影元数据、评分、演员角色关系、演员基础信息和别名/主创信息流式导入 SQLite；加上有界的 `--tmdb` 选择后，会同步每部电影的完整 TMDB cast、每位演员的 profile images，并通过已启动的 Identity Service 建立本地人脸向量：
+
+```bash
+scripts/download_imdb_datasets.sh
+go build -o .build/catalog-sync ./cmd/catalog-sync
+set -a; source .env; set +a
+.build/catalog-sync \
+  --imdb-basics data/imdb/title.basics.tsv.gz \
+  --imdb-ratings data/imdb/title.ratings.tsv.gz \
+  --imdb-principals data/imdb/title.principals.tsv.gz \
+  --imdb-names data/imdb/name.basics.tsv.gz \
+  --imdb-akas data/imdb/title.akas.tsv.gz \
+  --imdb-crew data/imdb/title.crew.tsv.gz \
+  --title-id-file data/imdb/title-ids.txt \
+  --tmdb
+```
+
+`--title-id-file` 每行一个 `tt...`；也可用 `--min-year`、`--max-year`、`--max-movies` 做批次。IMDb-only 导入可以不设上限；`--tmdb` 必须有界。SQLite 会以 IMDb/TMDB ID 去重，重复运行会跳过已存在的 face vector，适合中断后继续。默认数据库为 `data/identity.db`；旧版 `data/identity.json` 会在首次启动时只读迁移并保留。IMDb catalog 已经导入后，重复执行 TMDB 批次可加 `--skip-imdb-import`，跳过再次扫描/写入 IMDb bulk 数据。
+
+若 TMDB 直连不可用，让 Go worker 和 catalog-sync 的 TMDB 请求显式使用代理，例如：`TMDB_PROXY_URL=http://192.168.50.199:10810 .build/search-server` 或 `TMDB_PROXY_URL=http://192.168.50.199:10810 .build/catalog-sync ...`；媒体请求和 embedding 仍保持直连。
+
+视频采集启用 `IDENTITY_ENABLED=true` 后，默认开启 `IDENTITY_LAZY_LOAD=true`：只为当前视频的 IMDb cast 获取缺失的 TMDB 演员头像，默认每人最多 8 张 `w500` 图片，并在稳定 profile 顺序上分散选择；同一 IMDb/TMDB 演员跨影片共享向量。TMDB profile 查询默认 4 路有界并发，并按 IMDb 演员名单提前过滤 TMDB credits；已成功读取的演员 profile 清单会持久化，后续重启不重复请求。离线 `catalog-sync --tmdb` 也默认使用 `w500`，可用 `TMDB_PROFILE_IMAGE_SIZE` 调整，避免无意下载 `original` 大图。图片仅作为临时人脸推理输入，成功后删除，只保留 512D 向量和来源元数据。TMDB 图片下载可使用 `TMDB_PROXY_URL` 或更具体的 `IDENTITY_REFERENCE_PROXY_URL`。如需保留图片用于人工审核，设置 `IDENTITY_KEEP_REFERENCE_IMAGES=true`。
+
 若只验证 Go 闭环，不下载大模型，可省略上述 WEMM 环境变量，使用默认 hash fallback。
 
 另开终端启动 Go 主服务：
@@ -134,11 +186,15 @@ curl -s http://127.0.0.1:8000/v1/search \
 
 默认配置：
 
+身份元数据相关参数为 `VIDEO_SEARCH_IDENTITY_DB`（默认 `data/identity.db`）、`VIDEO_SEARCH_IDENTITY_FILE`（旧 JSON 迁移源）、`IDENTITY_MIN_REFERENCES`（默认 5）和 `IDENTITY_REFERENCE_MAX_PER_PERSON`（默认 8）。
+
 图片向量重建支持 `VIDEO_IMAGE_PROFILE=original|compressed`；压缩 profile 的像素范围由 `WEMM_COMPRESSED_MIN_IMAGE_PIXELS` 和 `WEMM_COMPRESSED_MAX_IMAGE_PIXELS` 控制。Go 服务默认使用 `original`，已处理视频可以在管理弹窗中单独或批量选择 profile 重建。
 
 - Go API：`127.0.0.1:8000`
 - Python embedding：`127.0.0.1:7001`
+- Python Identity：`127.0.0.1:7003`（启用身份链路时）
 - Go 索引：`data/index.json`
+- Identity SQLite：`data/identity.db`
 - 抽取帧：`data/frames/<media_id>`
 - embedding：`EMBEDDING_BACKEND=hash`、256 维；真实多模态检索使用 `EMBEDDING_BACKEND=wemm`、2048 维
 
@@ -146,7 +202,7 @@ curl -s http://127.0.0.1:8000/v1/search \
 
 远程（阿里云盘）视频不下载整个文件。容器类型由**首字节嗅探**判定（偏移 4 处是 `ftyp` → MP4，`1A 45 DF A3` → Matroska/WebM），而不是看云盘文件名后缀；MP4 用 `github.com/Eyevinn/mp4ff` 解析 `moov`，大 `moov` 默认按 1 MiB 分块、4 路并发 Range 拉取，并缓存解析后的索引；Matroska 用自研 EBML 解析器从 `SeekHead` 直接取 `Info`/`Tracks`/`Cues`，两者都只读元数据。抽帧时按索引**精确 Range** 下载单个 I 帧样本，MP4 转成 Annex-B、Matroska 的 VP8/VP9/AV1 封成单帧 IVF，再交给 `ffmpeg -f h264|hevc|ivf` 解码成 JPG。`VIDEO_REMOTE_CHUNK_SIZE`（默认 4194304）只用于索引不可用时回退的 FFmpeg 顺序读取，`VIDEO_REMOTE_CACHE_BYTES`（默认 100663296）是单次采集的区间缓存上限，超出按 LRU 淘汰；`VIDEO_REMOTE_MP4_MOOV_WORKERS`、`VIDEO_REMOTE_MP4_MOOV_CHUNK_SIZE` 控制 MP4 首次元数据下载，`VIDEO_REMOTE_INDEX_CACHE_DIR` 控制索引缓存目录。任务元数据里的 `remote_range.download_ratio`、`remote_container_index` 与 `remote_container_index_cache` 记录真实流量、索引摘要和缓存状态，详见 `docs/handoff.md`。
 
-采集任务提交前会对源文件计算 SHA-256 内容指纹。相同内容即使路径或文件名不同，也会复用已处理媒体或正在执行的任务，不会重复解析、抽帧和嵌入；文件内容发生变化后会创建新任务。旧版本索引若尚未保存指纹，则对同一 `local_path` 做兼容去重。
+采集 worker 领取本地任务后才计算源文件 SHA-256 内容指纹；相同内容即使路径或文件名不同，也会复用已处理媒体或正在执行的任务，不会重复解析、抽帧和嵌入；文件内容发生变化后会创建新任务。旧版本索引若尚未保存指纹，则对同一 `local_path` 做兼容去重。这样任务提交不会因读完整视频或等待 TMDB 而阻塞。
 
 这里要区分两种能力：WeMM 可以直接接收 `{"video": "/path/to/video.mp4"}` 得到一条视频级向量，但这条向量只能回答“哪部视频相关”，不能定位命中的时间段。本 MVP 为了返回 `start/end/preview`，采用“本地视频 → 分镜边界 → 代表帧 → image embedding → 场景向量”；视频级 embedding 后续作为媒体级粗召回，场景向量继续负责时间定位。
 
@@ -189,8 +245,8 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
 - `DELETE /v1/media/{media_id}`：删除媒体及其场景索引。
 - `POST /v1/media/batch/delete`：批量删除选中的媒体、关键帧及其向量，body 为 `{"media_ids":["..."]}`。
-- `POST /v1/acquisitions`：提交服务端本地视频路径，任务立即入队（`queued`）返回，不读取文件内容；由后台 worker 领取执行。
-- `POST /v1/acquisitions/batch`：单次请求批量入队多个采集任务，逐条返回创建结果与失败原因。
+- `POST /v1/acquisitions`：提交服务端本地视频路径，任务立即入队（`queued`）返回，不读取文件内容；由后台 worker 领取后先执行 IMDb/TMDB/人脸库准备，再处理视频。
+- `POST /v1/acquisitions/batch`：单次请求批量入队多个采集任务，逐条返回创建结果与失败原因；不会等待 TMDB 或人脸库准备。
 - `GET /v1/acquisitions`、`GET /v1/acquisitions/{task_id}`：查看采集任务。
 - `DELETE /v1/acquisitions/{task_id}`：取消排队/运行中的任务；终态任务则移除记录。
 - `POST /v1/acquisitions/batch/stop`：批量停止选中的排队/运行任务，body 为 `{"task_ids":["..."]}`。

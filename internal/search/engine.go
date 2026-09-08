@@ -39,6 +39,36 @@ func (e *Engine) GetMedia(mediaID string) (model.Media, bool) {
 	return e.store.GetMedia(mediaID)
 }
 
+// UpdateScenePeople persists identity tags without touching the visual
+// vectors. It is used by the identity-only rebuild task.
+func (e *Engine) UpdateScenePeople(media model.Media) error {
+	peopleStore, ok := e.store.(store.ScenePeopleStore)
+	if !ok {
+		return fmt.Errorf("index store does not support scene people")
+	}
+	if batchStore, ok := e.store.(store.ScenePeopleBatchStore); ok {
+		updates := make([]store.ScenePeopleUpdate, 0, len(media.Scenes))
+		for _, scene := range media.Scenes {
+			sceneID := scene.SceneID
+			if sceneID == "" {
+				sceneID = store.StableSceneID(media.MediaID, scene)
+			}
+			updates = append(updates, store.ScenePeopleUpdate{SceneID: sceneID, PersonIDs: scene.PersonIDs})
+		}
+		return batchStore.UpdateScenePeopleBatch(media.MediaID, updates)
+	}
+	for _, scene := range media.Scenes {
+		sceneID := scene.SceneID
+		if sceneID == "" {
+			sceneID = store.StableSceneID(media.MediaID, scene)
+		}
+		if err := peopleStore.UpdateScenePeople(media.MediaID, sceneID, scene.PersonIDs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FindMediaByFingerprint returns an indexed media item with the same content
 // fingerprint. The path fallback is only for legacy local records created
 // before content fingerprints were stored.
@@ -282,7 +312,7 @@ func (e *Engine) Search(ctx context.Context, request model.SearchRequest) (model
 	if mode != "media" && mode != "scene" {
 		return model.SearchResponse{}, fmt.Errorf("mode must be media or scene")
 	}
-	documents := e.store.SearchDocuments(store.Filter{Type: request.Type, Year: request.Year, Language: request.Language})
+	documents := e.store.SearchDocuments(store.Filter{MediaID: strings.TrimSpace(request.MediaID), Type: request.Type, Year: request.Year, Language: request.Language, PersonID: strings.TrimSpace(request.PersonID), PersonIDs: cleanPersonIDs(request.PersonIDs)})
 	response := model.SearchResponse{Query: strings.TrimSpace(request.Query), Results: []model.SearchResult{}}
 	if len(documents) == 0 {
 		return response, nil
@@ -429,7 +459,7 @@ func cosine(left, right []float32) float32 {
 }
 
 func sceneResult(scene model.Scene, score float32) model.SceneResult {
-	return model.SceneResult{SceneID: scene.SceneID, Start: scene.Start, End: scene.End, Score: roundScore(score), Preview: scene.Preview, PreviewTime: scene.PreviewTime, Caption: scene.Caption, Subtitle: scene.Subtitle}
+	return model.SceneResult{SceneID: scene.SceneID, Start: scene.Start, End: scene.End, Score: roundScore(score), Preview: scene.Preview, PreviewTime: scene.PreviewTime, Caption: scene.Caption, Subtitle: scene.Subtitle, PersonIDs: append([]string(nil), scene.PersonIDs...)}
 }
 
 // previewTimesFromMetadata rebuilds the scene-index → preview-frame timestamp
@@ -489,4 +519,21 @@ func previewFrameIndex(scene model.Scene) int {
 
 func roundScore(value float32) float32 {
 	return float32(math.Round(float64(value)*1_000_000) / 1_000_000)
+}
+
+func cleanPersonIDs(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
