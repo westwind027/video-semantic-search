@@ -104,6 +104,7 @@ func main() {
 		jobs.SetIdentityTagger(identityTagger)
 	}
 	server := api.NewServerWithAcquisitionAndAliyun(engine, indexStore, embedder, jobs, frameRoot, connector)
+	server.ConfigurePublicURL(os.Getenv("VIDEO_SEARCH_PUBLIC_URL"))
 	server.ConfigureIdentity(identityStore, identityTagger)
 	moviePreparer := identity.NewMoviePreparationService(identityStore, tmdbClient, references, intOrDefault("IDENTITY_MIN_REFERENCES", 5), intOrDefault("IDENTITY_REFERENCE_MAX_PER_PERSON", 8), identityEnabled)
 	jobs.SetMoviePreparer(moviePreparer)

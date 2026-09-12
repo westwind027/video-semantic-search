@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,7 +49,9 @@ func TestServerServesFrameForGetAndHead(t *testing.T) {
 	if err := os.WriteFile(framePath, []byte("fake-jpeg"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServerWithAcquisition(engine, index, embedder, nil, frameRoot).Handler()
+	server := NewServerWithAcquisition(engine, index, embedder, nil, frameRoot)
+	server.ConfigurePublicURL("https://search.example.test")
+	handler := server.Handler()
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		request := httptest.NewRequest(method, "/v1/media/frame-demo/frames/frame.jpg", nil)
 		response := httptest.NewRecorder()
@@ -53,6 +59,142 @@ func TestServerServesFrameForGetAndHead(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s frame status = %d, body=%s", method, response.Code, response.Body.String())
 		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/static/frames/frame-demo/frame.jpg", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "fake-jpeg" {
+		t.Fatalf("static frame response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestServerServesScaledFrame(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	frameRoot := t.TempDir()
+	frameDir := filepath.Join(frameRoot, "scaled-demo")
+	if err := os.MkdirAll(frameDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	framePath := filepath.Join(frameDir, "frame.jpg")
+	file, err := os.Create(framePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	for y := 0; y < 360; y++ {
+		for x := 0; x < 640; x++ {
+			source.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: 100, A: 255})
+		}
+	}
+	if err := jpeg.Encode(file, source, &jpeg.Options{Quality: 90}); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	media := model.Media{MediaID: "scaled-demo", Title: "Scaled demo", Scenes: []model.Scene{{Start: 0, End: 1}}}
+	if err := index.UpsertMedia(media, [][]float32{{1, 0}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServerWithAcquisition(search.NewEngine(index, testEmbedder{}, false), index, testEmbedder{}, nil, frameRoot).Handler()
+
+	tests := []struct {
+		name   string
+		query  string
+		width  int
+		height int
+	}{
+		{name: "small preset", query: "size=small", width: 320, height: 180},
+		{name: "tiny preset", query: "size=tiny", width: 160, height: 90},
+		{name: "custom fit", query: "width=100&height=100", width: 100, height: 56},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/static/frames/scaled-demo/frame.jpg?"+test.query, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/jpeg" {
+				t.Fatalf("scaled frame response = %d %s", response.Code, response.Body.String())
+			}
+			decoded, _, err := image.Decode(bytes.NewReader(response.Body.Bytes()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := decoded.Bounds().Size(); got.X != test.width || got.Y != test.height {
+				t.Fatalf("scaled frame size = %v, want %dx%d", got, test.width, test.height)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/static/frames/scaled-demo/frame.jpg?width=0", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid scale status = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerSearchGETReturnsAbsoluteFrameURL(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+
+	frameRoot := t.TempDir()
+	frameDir := filepath.Join(frameRoot, "network-demo")
+	if err := os.MkdirAll(frameDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	framePath := filepath.Join(frameDir, "frame one.jpg")
+	if err := os.WriteFile(framePath, []byte("fake-jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	media := model.Media{
+		MediaID: "network-demo",
+		Title:   "Network demo",
+		Scenes:  []model.Scene{{SceneID: "scene-1", Start: 0, End: 1, Caption: "a red car", Preview: framePath, PreviewPath: framePath}},
+	}
+	embedder := testEmbedder{}
+	if err := index.UpsertMedia(media, [][]float32{{1, 0}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithAcquisition(search.NewEngine(index, embedder, false), index, embedder, nil, frameRoot)
+	handler := server.Handler()
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/search?q=red+car&limit=1&min_score=0", nil)
+	request.Host = "192.168.50.10:8000"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET search status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var result model.SearchResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("GET search results = %+v", result.Results)
+	}
+	want := "http://192.168.50.10:8000/static/frames/network-demo/frame%20one.jpg"
+	if result.Results[0].Scene.Preview != want {
+		t.Fatalf("preview URL = %q, want %q", result.Results[0].Scene.Preview, want)
+	}
+	if strings.Contains(response.Body.String(), framePath) || strings.Contains(response.Body.String(), "preview_path") {
+		t.Fatalf("search response leaked local frame path: %s", response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/media/network-demo", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), framePath) || strings.Contains(response.Body.String(), "preview_path") {
+		t.Fatalf("media response leaked local frame path: %d %s", response.Code, response.Body.String())
 	}
 }
 

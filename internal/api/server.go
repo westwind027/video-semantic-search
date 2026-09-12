@@ -32,6 +32,7 @@ type Server struct {
 	embedder                 embedding.Client
 	jobs                     *acquisition.Manager
 	frameRoot                string
+	publicBaseURL            string
 	alipan                   *alipan.Manager
 	streams                  *streamProxy
 	cache                    *streamCache
@@ -62,6 +63,13 @@ func NewServerWithAcquisitionAndAliyun(engine *search.Engine, indexStore store.I
 		frameRoot = "data/frames"
 	}
 	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv()}
+}
+
+// ConfigurePublicURL sets the externally reachable origin used in generated
+// frame URLs. When it is empty, URLs are built from the incoming request host
+// so local development and direct LAN access continue to work.
+func (s *Server) ConfigurePublicURL(publicURL string) {
+	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
 }
 
 func (s *Server) Handler() http.Handler {
@@ -101,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/connectors/alipan/login/", s.handleAlipanLoginResource)
 	mux.HandleFunc("/v1/connectors/alipan/logout", s.handleAlipanLogout)
 	mux.HandleFunc("/v1/search", s.handleSearch)
+	mux.HandleFunc("/static/frames/", s.handleStaticFrame)
 	return mux
 }
 
@@ -164,7 +173,11 @@ func (s *Server) handleHealth(response http.ResponseWriter, request *http.Reques
 
 func (s *Server) handleMediaCollection(response http.ResponseWriter, request *http.Request) {
 	if request.Method == http.MethodGet {
-		writeJSON(response, http.StatusOK, s.store.ListMedia())
+		media := s.store.ListMedia()
+		for index := range media {
+			media[index] = s.mediaForResponse(request, media[index])
+		}
+		writeJSON(response, http.StatusOK, media)
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -243,7 +256,7 @@ func (s *Server) handleMediaByID(response http.ResponseWriter, request *http.Req
 			writeError(response, http.StatusNotFound, fmt.Errorf("media not found"))
 			return
 		}
-		writeJSON(response, http.StatusOK, media)
+		writeJSON(response, http.StatusOK, s.mediaForResponse(request, media))
 	case http.MethodDelete:
 		if err := s.deleteMedia(mediaID); err != nil {
 			status := http.StatusInternalServerError
@@ -490,7 +503,121 @@ func (s *Server) handleFrame(response http.ResponseWriter, request *http.Request
 		return
 	}
 	framePath := filepath.Join(frameDir, filename)
-	http.ServeFile(response, request, framePath)
+	s.serveFramePreview(response, request, framePath)
+}
+
+// handleStaticFrame is the public, stable URL for an extracted frame. The
+// older /v1/media/{id}/frames/{file} route remains available for compatibility.
+func (s *Server) handleStaticFrame(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		methodNotAllowed(response)
+		return
+	}
+	rawPath := strings.TrimPrefix(request.URL.Path, "/static/frames/")
+	parts := strings.Split(rawPath, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		http.NotFound(response, request)
+		return
+	}
+	s.handleFrame(response, request, parts[0], parts[1])
+}
+
+func (s *Server) mediaForResponse(request *http.Request, media model.Media) model.Media {
+	media.Scenes = append([]model.Scene(nil), media.Scenes...)
+	for index := range media.Scenes {
+		scene := &media.Scenes[index]
+		scene.Preview = s.publicPreviewURL(request, media.MediaID, scene.Preview, scene.PreviewPath)
+		// PreviewPath is an internal filesystem detail. It is intentionally not
+		// returned by public APIs now that Preview is a network URL.
+		scene.PreviewPath = ""
+	}
+	return media
+}
+
+func (s *Server) publicPreviewURL(request *http.Request, mediaID string, references ...string) string {
+	for _, raw := range references {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if parsed, err := url.Parse(raw); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+			return raw
+		}
+	}
+	filename := ""
+	for _, raw := range references {
+		if candidate := frameFilename(raw); candidate != "" {
+			filename = candidate
+			break
+		}
+	}
+	if filename == "" || !s.frameExists(mediaID, filename) {
+		return ""
+	}
+	framePath := "/static/frames/" + url.PathEscape(mediaID) + "/" + url.PathEscape(filename)
+	return s.absolutePublicURL(request, framePath)
+}
+
+func frameFilename(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil {
+		if parsed.Scheme == "http" || parsed.Scheme == "https" {
+			return ""
+		}
+		if parsed.Path != "" {
+			raw = parsed.Path
+		}
+	}
+	// Windows paths can arrive in legacy records even though the server runs
+	// under WSL. Treat both slash styles as path separators before taking the
+	// final component.
+	raw = strings.ReplaceAll(raw, "\\", "/")
+	filename := filepath.Base(raw)
+	if filename == "." || filename == ".." || filename == "" || strings.Contains(filename, "/") || strings.ContainsRune(filename, 0) {
+		return ""
+	}
+	if decoded, err := url.PathUnescape(filename); err == nil {
+		filename = decoded
+	}
+	if filename == "." || filename == ".." || filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.ContainsRune(filename, 0) {
+		return ""
+	}
+	return filename
+}
+
+func (s *Server) frameExists(mediaID, filename string) bool {
+	frameDir, safe := safeFrameDir(s.frameRoot, mediaID)
+	if !safe {
+		return false
+	}
+	framePath := filepath.Join(frameDir, filename)
+	relative, err := filepath.Rel(frameDir, framePath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Stat(framePath)
+	return err == nil && !info.IsDir()
+}
+
+func (s *Server) absolutePublicURL(request *http.Request, resourcePath string) string {
+	if s.publicBaseURL != "" {
+		return s.publicBaseURL + resourcePath
+	}
+	if request == nil || strings.TrimSpace(request.Host) == "" {
+		return resourcePath
+	}
+	scheme := "http"
+	if forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0]); strings.EqualFold(forwarded, "https") {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(request.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = request.Host
+	}
+	return scheme + "://" + host + resourcePath
 }
 
 func safeFrameDir(root, mediaID string) (string, bool) {
@@ -1867,12 +1994,21 @@ func videoPaths(directory string, recursive bool) ([]string, error) {
 }
 
 func (s *Server) handleSearch(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		methodNotAllowed(response)
-		return
-	}
 	var searchRequest model.SearchRequest
-	if err := decodeJSON(response, request, &searchRequest); err != nil {
+	switch request.Method {
+	case http.MethodGet:
+		var err error
+		searchRequest, err = networkSearchRequest(request)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+	case http.MethodPost:
+		if err := decodeJSON(response, request, &searchRequest); err != nil {
+			return
+		}
+	default:
+		methodNotAllowed(response)
 		return
 	}
 	if strings.TrimSpace(searchRequest.Query) == "" {
@@ -1910,8 +2046,64 @@ func (s *Server) handleSearch(response http.ResponseWriter, request *http.Reques
 		}
 		result.Results[index].Width = metadataInt(media.Metadata, "width")
 		result.Results[index].Height = metadataInt(media.Metadata, "height")
+		result.Results[index].Scene.Preview = s.publicPreviewURL(request, result.Results[index].MediaID, result.Results[index].Scene.Preview)
+		for sceneIndex := range result.Results[index].MatchedScenes {
+			result.Results[index].MatchedScenes[sceneIndex].Preview = s.publicPreviewURL(request, result.Results[index].MediaID, result.Results[index].MatchedScenes[sceneIndex].Preview)
+		}
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func networkSearchRequest(request *http.Request) (model.SearchRequest, error) {
+	queryValues := request.URL.Query()
+	searchRequest := model.SearchRequest{
+		Query:    strings.TrimSpace(firstQueryValue(queryValues, "query", "q")),
+		MediaID:  strings.TrimSpace(queryValues.Get("media_id")),
+		Type:     strings.TrimSpace(queryValues.Get("type")),
+		Language: strings.TrimSpace(queryValues.Get("language")),
+		Mode:     strings.TrimSpace(queryValues.Get("mode")),
+		PersonID: strings.TrimSpace(queryValues.Get("person_id")),
+		Person:   strings.TrimSpace(queryValues.Get("person")),
+	}
+	if raw := strings.TrimSpace(queryValues.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil {
+			return model.SearchRequest{}, fmt.Errorf("limit must be an integer")
+		}
+		searchRequest.Limit = limit
+	}
+	if raw := strings.TrimSpace(firstQueryValue(queryValues, "min_score", "minScore")); raw != "" {
+		minScore, err := strconv.ParseFloat(raw, 32)
+		if err != nil {
+			return model.SearchRequest{}, fmt.Errorf("min_score must be a number")
+		}
+		value := float32(minScore)
+		searchRequest.MinScore = &value
+	}
+	if raw := strings.TrimSpace(queryValues.Get("year")); raw != "" {
+		year, err := strconv.Atoi(raw)
+		if err != nil {
+			return model.SearchRequest{}, fmt.Errorf("year must be an integer")
+		}
+		searchRequest.Year = &year
+	}
+	for _, raw := range queryValues["person_ids"] {
+		for _, personID := range strings.Split(raw, ",") {
+			if personID = strings.TrimSpace(personID); personID != "" {
+				searchRequest.PersonIDs = append(searchRequest.PersonIDs, personID)
+			}
+		}
+	}
+	return searchRequest, nil
+}
+
+func firstQueryValue(values url.Values, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(values.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mergeMetadata(existing, incoming map[string]any) map[string]any {

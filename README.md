@@ -200,6 +200,8 @@ curl -s http://127.0.0.1:8000/v1/search \
 
 可通过 `VIDEO_SEARCH_ADDR`、`VIDEO_SEARCH_INDEX`、`VIDEO_SEARCH_FRAME_DIR`、`VIDEO_SEARCH_TASK_FILE`、`VIDEO_SCENE_WORKERS`、`VIDEO_SCENE_OVERLAP`、`VIDEO_SCENE_SAMPLE_FPS`、`VIDEO_SCENE_DETECTION_WIDTH`、`VIDEO_FRAME_WORKERS`、`VIDEO_FRAME_WIDTH`、`VIDEO_FRAME_TIMEOUT`、`VIDEO_FFMPEG_HWACCEL`、`VIDEO_SCENE_REFINE_WINDOWS`、`VIDEO_FAST_MODE`、`VIDEO_MAX_SCENES`、`VIDEO_FAST_MAX_SCENES`、`VIDEO_REMOTE_FRAME_WORKERS`、`VIDEO_REMOTE_CHUNK_SIZE`、`VIDEO_REMOTE_CACHE_BYTES`、`VIDEO_IMAGE_BATCH_SIZE`、`EMBEDDING_ENDPOINT`、`EMBEDDING_TIMEOUT`、`EMBEDDING_DIMENSION`、`WEMM_IMAGE_PROMPT`、`EMBEDDING_BATCH_SIZE` 覆盖。`VIDEO_SCENE_WORKERS` 默认 4，`VIDEO_FRAME_WORKERS` 默认 4，`VIDEO_FRAME_WIDTH` 默认 640，`VIDEO_FRAME_TIMEOUT` 默认 45s；准确模式默认先用关键帧做低成本变化检测，再把关键帧时间作为切点候选，避免对整部电影启动大量随机 ffmpeg。若设置 `VIDEO_SCENE_REFINE_WINDOWS=true`，才会对候选窗口做 2 FPS、640 像素宽度的原始阈值精检，边界更精确但耗时明显增加。`VIDEO_FFMPEG_HWACCEL` 默认 `auto`，分镜检测和抽帧都优先尝试 CUDA，失败时自动回退 CPU；10-bit 视频会使用匹配的 `p010le` 下载格式，也可设为 `cuda` 或 `none`。设置 `VIDEO_FAST_MODE=true`，或在上传弹窗选择快速模式，会跳过静态切镜扫描，按 `sample_interval` 均匀采样，最多 32 个画面；关键帧采样/准确模式最多 240 个画面，未指定采样间隔时默认按 30 秒采样。这是交互式快速索引，可能漏掉很短的镜头，准确模式适合离线完整处理。`EMBEDDING_BATCH_SIZE` 默认 8；WeMM 图片不再由应用层注入 `min_pixels/max_pixels`，交给 WeMM processor 的默认策略处理；如果显存不足，优先将 batch 降为 4 或 1。搜索默认只展示 WeMM 余弦相似度严格大于 0.3 的结果，按相关度降序返回 16 个媒体；`mode=media` 按视频归集，`mode=scene` 按片段平铺，`limit` 分别表示媒体或片段 TopN。不使用 RRF、最大值归一化或词法分数混入排序。设置 `VIDEO_SEARCH_USE_IMAGE_EMBEDDING=true` 后，Go 会把抽取的本地帧通过 image modality 发给 Python；默认关闭，因为当前 hash fallback 不理解图像。任务状态默认保存到 `data/acquisition_tasks.json`，浏览器刷新后可继续看到历史任务；服务重启时，未完成任务会标记为“服务重启，任务未完成”，不会伪装成仍在运行。图像嵌入默认按 32 帧一批发送（可通过 `VIDEO_IMAGE_BATCH_SIZE` 调整），只控制每批大小，不限制总画面数，并在任务栏报告批次进度；单帧 ffmpeg 超过超时时间会终止，避免任务卡死。
 
+`VIDEO_SEARCH_PUBLIC_URL` 可设置为服务对外可访问的根地址（例如 `http://192.168.50.10:8000`），用于生成绝对代表帧 URL；未设置时按每次请求的 Host 自动生成。
+
 远程（阿里云盘）视频不下载整个文件。容器类型由**首字节嗅探**判定（偏移 4 处是 `ftyp` → MP4，`1A 45 DF A3` → Matroska/WebM），而不是看云盘文件名后缀；MP4 用 `github.com/Eyevinn/mp4ff` 解析 `moov`，大 `moov` 默认按 1 MiB 分块、4 路并发 Range 拉取，并缓存解析后的索引；Matroska 用自研 EBML 解析器从 `SeekHead` 直接取 `Info`/`Tracks`/`Cues`，两者都只读元数据。抽帧时按索引**精确 Range** 下载单个 I 帧样本，MP4 转成 Annex-B、Matroska 的 VP8/VP9/AV1 封成单帧 IVF，再交给 `ffmpeg -f h264|hevc|ivf` 解码成 JPG。`VIDEO_REMOTE_CHUNK_SIZE`（默认 4194304）只用于索引不可用时回退的 FFmpeg 顺序读取，`VIDEO_REMOTE_CACHE_BYTES`（默认 100663296）是单次采集的区间缓存上限，超出按 LRU 淘汰；`VIDEO_REMOTE_MP4_MOOV_WORKERS`、`VIDEO_REMOTE_MP4_MOOV_CHUNK_SIZE` 控制 MP4 首次元数据下载，`VIDEO_REMOTE_INDEX_CACHE_DIR` 控制索引缓存目录。任务元数据里的 `remote_range.download_ratio`、`remote_container_index` 与 `remote_container_index_cache` 记录真实流量、索引摘要和缓存状态，详见 `docs/handoff.md`。
 
 采集 worker 领取本地任务后才计算源文件 SHA-256 内容指纹；相同内容即使路径或文件名不同，也会复用已处理媒体或正在执行的任务，不会重复解析、抽帧和嵌入；文件内容发生变化后会创建新任务。旧版本索引若尚未保存指纹，则对同一 `local_path` 做兼容去重。这样任务提交不会因读完整视频或等待 TMDB 而阻塞。
@@ -242,6 +244,7 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `GET /v1/media/{media_id}`：查看媒体和场景。
 - `GET /v1/media/{media_id}/stream`：播放原始视频。本地文件直接流出；云盘文件由服务端按 Range 代理，签名 URL 过期自动刷新，并带 4 MiB 磁盘块缓存与并行预取（聚合单连接限速），页面可从任意搜索结果画面起播到该画面抽帧的真实时间。缓存目录 `data/stream-cache/`（LRU，默认 2 GiB，`VIDEO_STREAM_CACHE_DIR=off` 禁用；上游并发 `VIDEO_STREAM_CONCURRENCY`，默认 8）。
 - `GET /v1/media/{media_id}/frames/{filename}`：查看 Go 抽取的代表帧。
+- `GET /static/frames/{media_id}/{filename}`：查看 Go 抽取的代表帧的稳定静态 URL；旧帧路由继续兼容。追加 `?size=small` 返回最大 320×240，追加 `?size=tiny` 返回最大 160×120；也可用 `?width=320&height=240` 或 `?w=160&h=120` 自定义等比缩放，`quality=1..100` 调整 JPEG 质量。
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
 - `DELETE /v1/media/{media_id}`：删除媒体及其场景索引。
 - `POST /v1/media/batch/delete`：批量删除选中的媒体、关键帧及其向量，body 为 `{"media_ids":["..."]}`。
@@ -264,6 +267,7 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `GET /v1/connectors/alipan/login/callback`：配置可访问回调地址时，用 OAuth 回调完成登录。
 - `POST /v1/connectors/alipan/logout`：删除本地阿里云盘凭据。
 - `POST /v1/search`：按自然语言检索，可用 `type`、`year`、`language`、`limit`、`min_score`、`mode` 过滤。
+- `GET /v1/search?q=雨夜追车&limit=16&mode=scene`：网络搜索接口；也接受 `query`、`media_id`、`person_id`、重复或逗号分隔的 `person_ids`、`type`、`year`、`language`、`min_score`、`mode`。搜索和媒体详情中的 `preview` 返回绝对 URL，`preview_path` 不对外暴露。
 - `GET /healthz`：查看索引数量和 embedding 服务状态。
 
 采集任务遇到 `ffprobe` 无法解析、`Invalid NAL unit`、`Invalid data found`、`moov atom not found` 等错误时，会统一标记为“文件损坏或无法解码”。单个时间点没有画面时，处理器会先尝试附近时间点；附近位置仍全部无法输出帧，也会按不可解码文件处理。

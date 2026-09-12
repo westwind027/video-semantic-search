@@ -31,6 +31,7 @@ Environment overrides:
   EMBEDDING_PORT         7001 (default)
   EMBEDDING_DIMENSION    2048 (default; supported WeMM Matryoshka dimension)
   EMBEDDING_BATCH_SIZE   8 (default; lower to 4 or 1 if GPU memory is insufficient)
+  VIDEO_SEARCH_PUBLIC_URL  external origin for absolute frame URLs (optional)
   WEMM_IMAGE_PROMPT      Represent this image. (default)
   WEMM_COMPRESSED_MIN_IMAGE_PIXELS  65536 (compressed profile default)
   WEMM_COMPRESSED_MAX_IMAGE_PIXELS  98304 (compressed profile default)
