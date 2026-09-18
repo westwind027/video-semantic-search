@@ -176,6 +176,15 @@ func TestSQLiteStoreSearchReadyPersonsForMoviesUsesProcessedIMDbCast(t *testing.
 	if len(ready) != 1 || ready[0].ID != "person-ready" {
 		t.Fatalf("processed movie people = %+v", ready)
 	}
+	if ready = store.SearchReadyPersonsForMoviesWithMinimum("", 10, []string{"movie-ready"}, 2); len(ready) != 0 {
+		t.Fatalf("incomplete processed movie people = %+v", ready)
+	}
+	if err := store.UpsertFaceVector(model.FaceVector{ID: "person-ready:vector-2", PersonID: "person-ready", ImageID: "person-ready:image-2", Vector: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if ready = store.SearchReadyPersonsForMoviesWithMinimum("", 10, []string{"movie-ready"}, 2); len(ready) != 1 || ready[0].ID != "person-ready" {
+		t.Fatalf("complete processed movie people = %+v", ready)
+	}
 	if got := store.SearchReadyPersonsForMovies("", 10, nil); len(got) != 0 {
 		t.Fatalf("empty processed movie scope = %+v", got)
 	}
@@ -273,6 +282,34 @@ func TestSQLiteStoreStreamsFullIMDbRelations(t *testing.T) {
 	person, ok := store.FindPersonByIMDbID("nm0001")
 	if !ok || person.Name != "Actor One" {
 		t.Fatalf("person = %+v, ok=%t", person, ok)
+	}
+}
+
+func TestResolveMovieForMediaPrefersAccentedIMDbTitleAndAliases(t *testing.T) {
+	directory := t.TempDir()
+	basics := writeSQLiteDataset(t, directory, "title.basics.tsv.gz", "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n"+
+		"tt0166076\tmovie\tAmelie or The Time to Love\tAmélie ou le temps d'aimer\t0\t1961\t\\N\t95\tDrama\n"+
+		"tt0211915\tmovie\tAmélie\tLe Fabuleux Destin d'Amélie Poulain\t0\t2001\t\\N\t122\tComedy,Romance\n")
+	akas := writeSQLiteDataset(t, directory, "title.akas.tsv.gz", "titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle\n"+
+		"tt0166076\t1\tAmelie\tUS\t\\N\t\\N\t\\N\t0\n"+
+		"tt0211915\t1\tAmelie\tUS\t\\N\t\\N\t\\N\t0\n")
+	store, err := NewSQLiteStore(filepath.Join(directory, "identity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.ImportIMDb(context.Background(), metadata.IMDbDatasetPaths{Basics: basics, Akas: akas}, metadata.IMDbImportOptions{IncludeAdult: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, title := range []string{
+		"[天使爱美丽(国法双语)].Amelie.2001.BluRay.720p.x264.mkv",
+		"Amelie",
+	} {
+		movie, found := ResolveMovieForMedia(store, model.Media{Title: title})
+		if !found || movie.IMDbID != "tt0211915" {
+			t.Fatalf("title %q resolved to %+v, found=%t; want Amélie (tt0211915)", title, movie, found)
+		}
 	}
 }
 

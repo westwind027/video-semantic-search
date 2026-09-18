@@ -134,6 +134,10 @@ type VideoProcessor struct {
 	// with bounded concurrency; these settings do not affect keyframe ranges.
 	RemoteMoovWorkers   int
 	RemoteMoovChunkSize int64
+	// RemoteRangeWorkers bounds HTTP range requests made by one remote
+	// acquisition. It is separate from RemoteFrameWorkers: frame extraction
+	// remains parallel while the upstream CDN sees a stable request rate.
+	RemoteRangeWorkers int
 	// RemoteIndexCacheDir stores compact parsed MP4 indexes keyed by the remote
 	// content identity. It never stores the original video or moov bytes.
 	RemoteIndexCacheDir string
@@ -144,6 +148,13 @@ type VideoProcessor struct {
 }
 
 func NewVideoProcessor(frameRoot string) *VideoProcessor {
+	frameRoot = strings.TrimSpace(frameRoot)
+	if frameRoot == "" {
+		frameRoot = "data/frames"
+	}
+	if absolute, err := filepath.Abs(frameRoot); err == nil {
+		frameRoot = absolute
+	}
 	return &VideoProcessor{
 		FFprobePath:         "ffprobe",
 		FFmpegPath:          "ffmpeg",
@@ -163,6 +174,7 @@ func NewVideoProcessor(frameRoot string) *VideoProcessor {
 		RemoteCacheBytes:    source.DefaultMaxCacheBytes,
 		RemoteMoovWorkers:   defaultMP4MoovWorkers,
 		RemoteMoovChunkSize: defaultMP4MoovChunkSize,
+		RemoteRangeWorkers:  source.DefaultMaxConcurrentRequests,
 		RemoteIndexCacheDir: filepath.Join(frameRoot, ".container-index-cache"),
 	}
 }
@@ -220,6 +232,9 @@ func (p *VideoProcessor) Process(ctx context.Context, mediaID string, request Re
 		}
 		if p.RemoteCacheBytes > 0 {
 			remoteReader.SetMaxCacheBytes(p.RemoteCacheBytes)
+		}
+		if p.RemoteRangeWorkers > 0 {
+			remoteReader.SetMaxConcurrentRequests(p.RemoteRangeWorkers)
 		}
 		remoteReader.SetURLRefresher(func(refreshContext context.Context) (string, error) {
 			fresh, refreshErr := p.RemoteResolver.ResolveVideo(refreshContext, request.DriveID, request.FileID)

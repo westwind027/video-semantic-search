@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,13 @@ func TestDiagMatroskaSamples(t *testing.T) {
 	}
 	t.Logf("remote size=%d", video.Size)
 	reader := source.NewHTTPRangeReader(video.URL, video.Size, nil)
+	reader.SetURLRefresher(func(refreshContext context.Context) (string, error) {
+		fresh, refreshErr := connector.ResolveVideo(refreshContext, driveID, fileID)
+		if refreshErr != nil {
+			return "", refreshErr
+		}
+		return fresh.URL, nil
+	})
 
 	index, err := buildMatroskaIndex(ctx, reader)
 	if err != nil {
@@ -60,6 +69,9 @@ func TestDiagMatroskaSamples(t *testing.T) {
 		t.Fatalf("no cue at or before %.3f", timestamp)
 	}
 	t.Logf("cue ts=%.3f cluster=%d relative=%d", cue.Timestamp, cue.Cluster, cue.Relative)
+	if cluster, clusterErr := index.clusterHead(ctx, cue.Cluster); clusterErr == nil {
+		t.Logf("cluster offset=%d data_start=%d end=%d payload_bytes=%d", cluster.offset, cluster.dataStart, cluster.end, cluster.end-cluster.dataStart)
+	}
 	sample, payload, err := index.resolveCue(ctx, cue)
 	if err != nil {
 		t.Fatalf("resolve cue: %v", err)
@@ -120,4 +132,80 @@ func TestDiagMatroskaSamples(t *testing.T) {
 		}
 		t.Logf("converted head=%s nalLength(now)=%d", hex.EncodeToString(convHead), index.NALLength)
 	}
+}
+
+// TestDiagMatroskaConcurrentSamples replays the remote-frame worker pattern
+// against a handful of cues. It is intentionally opt-in because it exercises a
+// real cloud-drive download URL; unlike the single-sample diagnostic above it
+// can expose upstream range throttling caused by concurrent frame extraction.
+func TestDiagMatroskaConcurrentSamples(t *testing.T) {
+	fileID := os.Getenv("DIAG_MKV_FILE_ID")
+	if fileID == "" || os.Getenv("DIAG_MKV_CONCURRENT") == "" {
+		t.Skip("DIAG_MKV_FILE_ID and DIAG_MKV_CONCURRENT are required")
+	}
+	driveID := os.Getenv("DIAG_MKV_DRIVE_ID")
+	connector := alipan.NewManager(alipan.ConfigFromEnv())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	video, err := connector.ResolveVideo(ctx, driveID, fileID)
+	if err != nil {
+		t.Fatalf("resolve video: %v", err)
+	}
+	reader := source.NewHTTPRangeReader(video.URL, video.Size, nil)
+	reader.SetURLRefresher(func(refreshContext context.Context) (string, error) {
+		fresh, refreshErr := connector.ResolveVideo(refreshContext, driveID, fileID)
+		if refreshErr != nil {
+			return "", refreshErr
+		}
+		return fresh.URL, nil
+	})
+	index, err := buildMatroskaIndex(ctx, reader)
+	if err != nil {
+		t.Fatalf("build matroska index: %v", err)
+	}
+	raw := os.Getenv("DIAG_MKV_TIMESTAMPS")
+	if raw == "" {
+		raw = "2865.294,3363.606,4111.074,4360.230,4609.386,5107.698,5606.010,6104.322"
+	}
+	parts := strings.Split(raw, ",")
+	if os.Getenv("DIAG_MKV_ALL") != "" {
+		duration := index.Duration
+		parts = make([]string, 32)
+		for sampleIndex := range parts {
+			parts[sampleIndex] = strconv.FormatFloat(indexDurationSample(sampleIndex, 32, duration), 'f', 3, 64)
+		}
+	}
+	results := make(chan error, len(parts))
+	for _, part := range parts {
+		timestamp, parseErr := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if parseErr != nil {
+			t.Fatalf("parse timestamp %q: %v", part, parseErr)
+		}
+		if cue, ok := index.cueAtOrBefore(timestamp); ok && cue.Relative < 0 {
+			if cluster, clusterErr := index.clusterHead(ctx, cue.Cluster); clusterErr == nil {
+				t.Logf("timestamp=%.3f cluster=%d payload_bytes=%d", timestamp, cluster.offset, cluster.end-cluster.dataStart)
+			}
+		}
+		go func(timestamp float64) {
+			_, _, readErr := index.readKeyframe(ctx, timestamp)
+			results <- readErr
+		}(timestamp)
+	}
+	var failures []string
+	for range parts {
+		if readErr := <-results; readErr != nil {
+			failures = append(failures, readErr.Error())
+		}
+	}
+	t.Logf("concurrent samples=%d failures=%d stats=%+v", len(parts), len(failures), reader.Stats())
+	for _, failure := range failures {
+		t.Logf("failure: %s", failure)
+	}
+	if len(failures) > 0 {
+		t.Fatalf("concurrent Matroska samples failed: %d/%d", len(failures), len(parts))
+	}
+}
+
+func indexDurationSample(index, count int, duration float64) float64 {
+	return duration * (float64(index) + 0.5) / float64(count)
 }

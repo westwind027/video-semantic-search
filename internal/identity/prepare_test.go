@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -195,6 +196,67 @@ func TestMoviePreparationCompletesFaceBankAndIsIdempotent(t *testing.T) {
 	}
 	if !result.Ready || len(store.ListFaceVectors("person-1")) != 2 {
 		t.Fatalf("second preparation = %+v, vectors=%d", result, len(store.ListFaceVectors("person-1")))
+	}
+}
+
+func TestMoviePreparationAllowsPartialFaceBank(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "identity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	movie := model.Movie{
+		ID:             "movie-partial-face-bank",
+		IMDbID:         "tt0002",
+		Title:          "Partial Face Bank",
+		TMDBStatus:     TMDBStatusComplete,
+		FaceBankStatus: FaceBankStatusPending,
+		Metadata:       map[string]any{"tmdb_full_cast": true},
+	}
+	if err := store.UpsertMovie(movie); err != nil {
+		t.Fatal(err)
+	}
+	people := []model.Person{
+		{ID: "person-complete", IMDbID: "nm0002", Name: "Complete Actor"},
+		{ID: "person-partial", IMDbID: "nm0003", Name: "Partial Actor"},
+	}
+	for _, person := range people {
+		if err := store.UpsertPerson(person); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.ReplaceMovieCast(movie.ID, []model.MovieCast{
+		{MovieID: movie.ID, PersonID: "person-complete", Source: "imdb_principals"},
+		{MovieID: movie.ID, PersonID: "person-partial", Source: "imdb_principals"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 2; index++ {
+		if err := store.UpsertFaceVector(model.FaceVector{
+			ID:       fmt.Sprintf("complete-vector-%d", index),
+			PersonID: "person-complete",
+			ImageID:  fmt.Sprintf("complete-image-%d", index),
+			Vector:   []float32{1, 0},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpsertFaceVector(model.FaceVector{ID: "partial-vector", PersonID: "person-partial", ImageID: "partial-image", Vector: []float32{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	references := NewReferenceIngestor(store, testFaceClient{}, ReferenceConfig{Workers: 1, MinDetScore: .6})
+	service := NewMoviePreparationService(store, nil, references, 2, 2, true)
+	result, err := service.Prepare(context.Background(), MoviePreparationRequest{MovieID: movie.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Ready || result.FaceBankStatus != FaceBankStatusPartial {
+		t.Fatalf("partial face bank must not block preparation: %+v", result)
+	}
+	if result.ReadyPersonCount != 1 || len(result.MissingPersonNames) != 1 || result.MissingPersonNames[0] != "Partial Actor" {
+		t.Fatalf("partial face bank details = %+v", result)
 	}
 }
 

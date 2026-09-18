@@ -41,6 +41,7 @@ type Server struct {
 	identityTagger           identity.Tagger
 	identityClient           identity.Client
 	moviePreparer            identity.MoviePreparer
+	identityMinReferences    int
 	tmdb                     *metadata.TMDBClient
 	processedMovieMu         sync.Mutex
 	processedMovieSignature  string
@@ -63,7 +64,7 @@ func NewServerWithAcquisitionAndAliyun(engine *search.Engine, indexStore store.I
 	if frameRoot == "" {
 		frameRoot = "data/frames"
 	}
-	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), playerControl: newPlayerControlHub(), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv()}
+	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), playerControl: newPlayerControlHub(), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv(), identityMinReferences: 5}
 }
 
 // ConfigurePublicURL sets the externally reachable origin used in generated
@@ -125,6 +126,17 @@ func (s *Server) ConfigureIdentity(identityStore identity.Store, tagger identity
 	if service, ok := tagger.(*identity.TaggerService); ok {
 		s.identityClient = service.Client()
 	}
+}
+
+// ConfigureIdentityReferenceMinimum controls which people are offered by the
+// actor search picker. It intentionally does not make movie acquisition wait
+// for every cast member; incomplete face banks are reported as partial and
+// remain usable for the references that are available.
+func (s *Server) ConfigureIdentityReferenceMinimum(minimum int) {
+	if minimum < 1 {
+		minimum = 1
+	}
+	s.identityMinReferences = minimum
 }
 
 // ConfigureMoviePreparer attaches the idempotent IMDb/TMDB/face-bank
@@ -1432,7 +1444,15 @@ func (s *Server) handlePersonCollection(response http.ResponseWriter, request *h
 		}
 		if catalog, ok := s.identityStore.(identity.PersonCatalog); ok {
 			if scoped, scopedOK := s.identityStore.(identity.ProcessedMoviePersonSearcher); scopedOK {
+				if minimumScoped, minimumOK := s.identityStore.(identity.MinimumReferenceProcessedMoviePersonSearcher); minimumOK {
+					writeJSON(response, http.StatusOK, minimumScoped.SearchReadyPersonsForMoviesWithMinimum(query, limit, s.processedMovieIDs(), s.identityMinReferences))
+					return
+				}
 				writeJSON(response, http.StatusOK, scoped.SearchReadyPersonsForMovies(query, limit, s.processedMovieIDs()))
+				return
+			}
+			if minimumCatalog, minimumOK := s.identityStore.(identity.MinimumReferencePersonCatalog); minimumOK {
+				writeJSON(response, http.StatusOK, minimumCatalog.SearchReadyPersonsWithMinimum(query, limit, s.identityMinReferences))
 				return
 			}
 			writeJSON(response, http.StatusOK, catalog.SearchReadyPersons(query, limit))

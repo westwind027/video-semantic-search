@@ -150,6 +150,7 @@ echo "inference: batch=$EMBEDDING_BATCH_SIZE image_profiles=original,compressed 
 echo "download mode: http (HF_HUB_DISABLE_XET=$HF_HUB_DISABLE_XET)"
 echo "start: $(date -Is)" | tee -a "$LOG_FILE"
 
+cd "$ROOT_DIR"
 set +e
 PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$ROOT_DIR/python/embedding_service.py" 2>&1 | tee -a "$LOG_FILE"
 status=${PIPESTATUS[0]}

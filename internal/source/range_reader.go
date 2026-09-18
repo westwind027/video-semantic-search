@@ -30,6 +30,10 @@ const (
 	// maxRangeLength rejects absurd lengths coming from a corrupt container
 	// header before any allocation happens.
 	maxRangeLength = 256 << 20
+	// DefaultMaxConcurrentRequests keeps cloud-drive range reads below the
+	// throttling threshold observed by original-file CDNs. Frame workers may
+	// still run in parallel; only upstream byte requests are bounded.
+	DefaultMaxConcurrentRequests = 4
 )
 
 // RangeReader is a seekable view over a remote file. It downloads exactly the
@@ -41,6 +45,9 @@ type RangeReader struct {
 	ChunkSize  int64
 	Client     *http.Client
 	MaxRetries int
+	// MaxConcurrentRequests bounds in-flight HTTP range requests. Configure it
+	// before the reader is used.
+	MaxConcurrentRequests int
 	// PrefetchChunks enables bounded look-ahead for sequential metadata reads.
 	// It is intentionally opt-in: random frame reads must not download
 	// neighbouring media chunks that may never be used.
@@ -59,7 +66,8 @@ type RangeReader struct {
 	refreshURL  func(context.Context) (string, error)
 	refreshMu   sync.Mutex
 
-	cache rangeCache
+	cache        rangeCache
+	requestSlots chan struct{}
 }
 
 // rangeSpan is an inclusive byte interval.
@@ -91,17 +99,31 @@ func NewHTTPRangeReader(rawURL string, size int64, client *http.Client) *RangeRe
 		client = httpclient.NewDirectClient(45 * time.Second)
 	}
 	reader := &RangeReader{
-		URL:           strings.TrimSpace(rawURL),
-		ChunkSize:     DefaultChunkSize,
-		Client:        client,
-		MaxRetries:    3,
-		MaxCacheBytes: DefaultMaxCacheBytes,
-		lastReadEnd:   -1,
-		size:          size,
-		flights:       make(map[rangeSpan]*rangeFlight),
+		URL:                   strings.TrimSpace(rawURL),
+		ChunkSize:             DefaultChunkSize,
+		Client:                client,
+		MaxRetries:            3,
+		MaxConcurrentRequests: DefaultMaxConcurrentRequests,
+		MaxCacheBytes:         DefaultMaxCacheBytes,
+		lastReadEnd:           -1,
+		size:                  size,
+		flights:               make(map[rangeSpan]*rangeFlight),
 	}
 	reader.cache.maxBytes = DefaultMaxCacheBytes
+	reader.requestSlots = make(chan struct{}, DefaultMaxConcurrentRequests)
 	return reader
+}
+
+// SetMaxConcurrentRequests bounds in-flight upstream range requests. Callers
+// should use it immediately after construction, before starting readers.
+func (r *RangeReader) SetMaxConcurrentRequests(count int) {
+	if count <= 0 {
+		count = DefaultMaxConcurrentRequests
+	}
+	r.mu.Lock()
+	r.MaxConcurrentRequests = count
+	r.requestSlots = make(chan struct{}, count)
+	r.mu.Unlock()
 }
 
 // SetMaxCacheBytes bounds how much downloaded data stays resident. Eviction is
@@ -502,11 +524,18 @@ func (r *RangeReader) fetchBytes(ctx context.Context, start, end int64) ([]byte,
 		}
 		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 		request.Header.Set("Accept-Encoding", "identity")
-		response, err := r.Client.Do(request)
-		if err != nil {
-			lastErr = err
+		release, acquireErr := r.acquireRequest(ctx)
+		if acquireErr != nil {
+			lastErr = acquireErr
+			break
+		}
+		response, requestErr := r.Client.Do(request)
+		if requestErr != nil {
+			release()
+			lastErr = requestErr
 		} else {
 			data, size, readErr := r.readRangeResponse(response, start, end)
+			release()
 			if readErr == nil {
 				r.mu.Lock()
 				r.requests++
@@ -515,15 +544,21 @@ func (r *RangeReader) fetchBytes(ctx context.Context, start, end int64) ([]byte,
 				return data, size, nil
 			}
 			lastErr = readErr
-			if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && !refreshed {
+			status := response.StatusCode
+			if (status == http.StatusUnauthorized || status == http.StatusForbidden) && !refreshed {
 				refreshed = true
-				if refreshErr := r.refreshSignedURL(ctx, request.URL.String()); refreshErr == nil {
-					continue
-				} else {
+				if refreshErr := r.refreshSignedURL(ctx, request.URL.String()); refreshErr != nil {
 					lastErr = fmt.Errorf("refresh signed URL: %w", refreshErr)
 				}
 			}
-			if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
+			// A cloud-drive CDN can use 403 as a temporary range-throttling
+			// response, not only as an expired-signature response. Do not exit
+			// after the first refreshed 403; back off and use the remaining
+			// bounded attempts.
+			if status != http.StatusUnauthorized &&
+				status != http.StatusForbidden &&
+				status != http.StatusTooManyRequests &&
+				status < 500 {
 				break
 			}
 		}
@@ -536,6 +571,26 @@ func (r *RangeReader) fetchBytes(ctx context.Context, start, end int64) ([]byte,
 		}
 	}
 	return nil, 0, fmt.Errorf("read remote range %d-%d: %w", start, end, lastErr)
+}
+
+func (r *RangeReader) acquireRequest(ctx context.Context) (func(), error) {
+	r.mu.Lock()
+	slots := r.requestSlots
+	if slots == nil {
+		count := r.MaxConcurrentRequests
+		if count <= 0 {
+			count = DefaultMaxConcurrentRequests
+		}
+		slots = make(chan struct{}, count)
+		r.requestSlots = slots
+	}
+	r.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (r *RangeReader) currentURL() string {

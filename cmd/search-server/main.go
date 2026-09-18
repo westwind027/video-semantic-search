@@ -56,6 +56,7 @@ func main() {
 	// samples are always requested as exact intervals.
 	processor.RemoteChunkSize = int64OrDefault("VIDEO_REMOTE_CHUNK_SIZE", processor.RemoteChunkSize)
 	processor.RemoteCacheBytes = int64OrDefault("VIDEO_REMOTE_CACHE_BYTES", processor.RemoteCacheBytes)
+	processor.RemoteRangeWorkers = intOrDefault("VIDEO_REMOTE_RANGE_WORKERS", processor.RemoteRangeWorkers)
 	processor.RemoteMoovWorkers = intOrDefault("VIDEO_REMOTE_MP4_MOOV_WORKERS", processor.RemoteMoovWorkers)
 	processor.RemoteMoovChunkSize = int64OrDefault("VIDEO_REMOTE_MP4_MOOV_CHUNK_SIZE", processor.RemoteMoovChunkSize)
 	processor.RemoteIndexCacheDir = envOrDefault("VIDEO_REMOTE_INDEX_CACHE_DIR", processor.RemoteIndexCacheDir)
@@ -106,7 +107,12 @@ func main() {
 	server := api.NewServerWithAcquisitionAndAliyun(engine, indexStore, embedder, jobs, frameRoot, connector)
 	server.ConfigurePublicURL(os.Getenv("VIDEO_SEARCH_PUBLIC_URL"))
 	server.ConfigureIdentity(identityStore, identityTagger)
-	moviePreparer := identity.NewMoviePreparationService(identityStore, tmdbClient, references, intOrDefault("IDENTITY_MIN_REFERENCES", 5), intOrDefault("IDENTITY_REFERENCE_MAX_PER_PERSON", 8), identityEnabled)
+	identityMinimumReferences := intOrDefault("IDENTITY_MIN_REFERENCES", 5)
+	if identityMinimumReferences < 1 {
+		identityMinimumReferences = 5
+	}
+	server.ConfigureIdentityReferenceMinimum(identityMinimumReferences)
+	moviePreparer := identity.NewMoviePreparationService(identityStore, tmdbClient, references, identityMinimumReferences, intOrDefault("IDENTITY_REFERENCE_MAX_PER_PERSON", 8), identityEnabled)
 	jobs.SetMoviePreparer(moviePreparer)
 	server.ConfigureMoviePreparer(moviePreparer)
 

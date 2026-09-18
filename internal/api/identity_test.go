@@ -65,6 +65,7 @@ func TestIdentityMetadataAndPersonSearch(t *testing.T) {
 	}
 	server := NewServer(search.NewEngine(index, testEmbedder{}, false), index, testEmbedder{})
 	server.ConfigureIdentity(identityStore, nil)
+	server.ConfigureIdentityReferenceMinimum(1)
 	handler := server.Handler()
 
 	response := httptest.NewRecorder()
@@ -134,6 +135,67 @@ func TestIdentityMetadataAndPersonSearch(t *testing.T) {
 	}
 	if movie.ID != "movie:tmdb:12" {
 		t.Fatalf("movie=%+v", movie)
+	}
+}
+
+func TestPersonSearchExcludesIncompleteFaceBank(t *testing.T) {
+	index, err := store.NewFileStore(filepath.Join(t.TempDir(), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	identityStore, err := identity.NewFileStore(filepath.Join(t.TempDir(), "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer identityStore.Close()
+	if err := identityStore.UpsertPerson(model.Person{ID: "person-partial", IMDbID: "nm0000003", Name: "Partial Actor"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := identityStore.UpsertMovie(model.Movie{ID: "movie-partial", IMDbID: "tt0000003", Title: "Partial Movie"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := identityStore.ReplaceMovieCast("movie-partial", []model.MovieCast{{MovieID: "movie-partial", PersonID: "person-partial", Source: "imdb_principals"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := identityStore.UpsertFaceVector(model.FaceVector{ID: "partial-face-1", PersonID: "person-partial", ImageID: "partial-image-1", Vector: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.UpsertMedia(model.Media{MediaID: "media-partial", MovieID: "movie-partial", Title: "Partial Movie", Scenes: []model.Scene{{SceneID: "scene-partial", Start: 0, End: 1}}}, [][]float32{{1, 0}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(search.NewEngine(index, testEmbedder{}, false), index, testEmbedder{})
+	server.ConfigureIdentity(identityStore, nil)
+	server.ConfigureIdentityReferenceMinimum(2)
+	handler := server.Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/metadata/persons?q=partial&limit=10", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("partial person lookup status=%d body=%s", response.Code, response.Body.String())
+	}
+	var people []model.Person
+	if err := json.Unmarshal(response.Body.Bytes(), &people); err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 0 {
+		t.Fatalf("incomplete face bank person was searchable: %+v", people)
+	}
+
+	if err := identityStore.UpsertFaceVector(model.FaceVector{ID: "partial-face-2", PersonID: "person-partial", ImageID: "partial-image-2", Vector: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/metadata/persons?q=partial&limit=10", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("complete person lookup status=%d body=%s", response.Code, response.Body.String())
+	}
+	people = nil
+	if err := json.Unmarshal(response.Body.Bytes(), &people); err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 || people[0].ID != "person-partial" {
+		t.Fatalf("complete face bank person missing from search: %+v", people)
 	}
 }
 

@@ -381,3 +381,50 @@ func TestRangeReaderRefreshesExpiredSignedURL(t *testing.T) {
 		t.Fatalf("refreshes = %d, want 1", refreshes)
 	}
 }
+
+func TestRangeReaderRetriesTransientForbiddenAfterRefresh(t *testing.T) {
+	payload := []byte("transient 403 payload")
+	var mu sync.Mutex
+	freshRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("token") != "fresh" {
+			response.WriteHeader(http.StatusForbidden)
+			return
+		}
+		mu.Lock()
+		freshRequests++
+		attempt := freshRequests
+		mu.Unlock()
+		if attempt <= 2 {
+			response.WriteHeader(http.StatusForbidden)
+			return
+		}
+		var start, end int
+		if _, err := fmt.Sscanf(request.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		response.WriteHeader(http.StatusPartialContent)
+		_, _ = response.Write(payload[start : end+1])
+	}))
+	defer server.Close()
+
+	reader := NewHTTPRangeReader(server.URL+"?token=expired", int64(len(payload)), server.Client())
+	reader.MaxRetries = 3
+	refreshes := 0
+	reader.SetURLRefresher(func(context.Context) (string, error) {
+		refreshes++
+		return server.URL + "?token=fresh", nil
+	})
+	data, _, err := reader.fetchBytes(context.Background(), 0, int64(len(payload)-1))
+	if err != nil {
+		t.Fatalf("transient 403 should be retried: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("payload = %q, want %q", data, payload)
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", refreshes)
+	}
+}

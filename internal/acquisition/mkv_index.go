@@ -85,8 +85,11 @@ const (
 	// arrive in the same request as its own header.
 	matroskaSeekProbeBytes = 4 << 10
 	// matroskaClusterScanBytes bounds the search for a keyframe inside a cluster
-	// that did not record a relative block position.
-	matroskaClusterScanBytes = 1 << 20
+	// that did not record a relative block position. A number of real-world
+	// remuxes omit CueRelativePosition and put the first video block after more
+	// than one MiB of attachments/other blocks; eight MiB remains a sparse read
+	// compared with downloading the full remote movie.
+	matroskaClusterScanBytes = 8 << 20
 	// matroskaScannerHops bounds how many range requests the index build may
 	// issue, so a damaged file cannot turn into an endless walk.
 	matroskaScannerHops = 64

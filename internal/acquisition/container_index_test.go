@@ -498,3 +498,63 @@ func TestMatroskaElementaryRepairsDroppedLengthPrefixByte(t *testing.T) {
 		t.Fatalf("repaired sample = %x, want %x", got, want)
 	}
 }
+
+func TestMatroskaClusterScanContinuesPastOneMiB(t *testing.T) {
+	fillerSize := (1 << 20) + 128
+	timestamp := []byte{0xE7, 0x81, 0x00}
+	voidHeader := append([]byte{0xEC}, ebmlTestSize(fillerSize)...)
+	voidElement := append(append([]byte{}, voidHeader...), make([]byte, fillerSize)...)
+	blockBody := []byte{0x81, 0x00, 0x00, 0x80, 0x65}
+	blockElement := append([]byte{0xA3}, ebmlTestSize(len(blockBody))...)
+	blockElement = append(blockElement, blockBody...)
+	clusterPayload := append(append(append([]byte{}, timestamp...), voidElement...), blockElement...)
+	cluster := append([]byte{0x1F, 0x43, 0xB6, 0x75}, ebmlTestSize(len(clusterPayload))...)
+	cluster = append(cluster, clusterPayload...)
+
+	path := filepath.Join(t.TempDir(), "large-cluster.mkv")
+	if err := os.WriteFile(path, cluster, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fetcher, err := newFileRangeFetcher(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fetcher.Close()
+	index := &matroskaIndex{Fetcher: fetcher, TrackNumber: 1}
+	headLength := int64(4 + len(ebmlTestSize(len(clusterPayload))))
+	head := matroskaClusterHead{
+		offset:    0,
+		dataStart: headLength,
+		end:       int64(len(cluster)),
+	}
+	got, err := index.scanClusterKeyframe(context.Background(), head)
+	if err != nil {
+		t.Fatalf("scan cluster with a late keyframe: %v", err)
+	}
+	want := headLength + int64(len(timestamp)+len(voidElement))
+	if got != want {
+		t.Fatalf("keyframe element offset = %d, want %d", got, want)
+	}
+}
+
+func ebmlTestSize(value int) []byte {
+	if value < 0 {
+		panic("negative EBML test size")
+	}
+	unsigned := uint64(value)
+	for length := 1; length <= 8; length++ {
+		max := (uint64(1) << uint(7*length)) - 2
+		if unsigned > max {
+			continue
+		}
+		encoded := make([]byte, length)
+		remaining := unsigned
+		for index := length - 1; index >= 0; index-- {
+			encoded[index] = byte(remaining)
+			remaining >>= 8
+		}
+		encoded[0] |= 1 << uint(8-length)
+		return encoded
+	}
+	panic("EBML test size is too large")
+}

@@ -54,4 +54,5 @@ fi
 mkdir -p "$(dirname "$IDENTITY_LOG")"
 echo "identity log: $IDENTITY_LOG"
 echo "start: $(date -Is)" | tee -a "$IDENTITY_LOG"
+cd "$ROOT_DIR"
 PYTHONUNBUFFERED=1 "$PYTHON_BIN" "$ROOT_DIR/python/identity_service.py" 2>&1 | tee -a "$IDENTITY_LOG"

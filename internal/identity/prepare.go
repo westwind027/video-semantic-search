@@ -149,9 +149,19 @@ func (s *MoviePreparationService) Prepare(ctx context.Context, request MoviePrep
 	result.MissingPersonIDs = missingIDs
 	result.MissingPersonNames = missingNames
 	result.FaceBankStatus = movie.FaceBankStatus
-	result.Ready = movie.TMDBStatus == TMDBStatusComplete && movie.FaceBankStatus == FaceBankStatusComplete
+	// A movie can be processed with a partial face bank. Actors without a
+	// complete reference set are omitted from the actor picker and simply have
+	// no usable reference during scene matching; they must not block semantic
+	// video acquisition.
+	tmdbReady := movie.TMDBStatus == TMDBStatusComplete || movie.TMDBStatus == TMDBStatusPartial
+	faceBankReady := movie.FaceBankStatus == FaceBankStatusComplete || movie.FaceBankStatus == FaceBankStatusPartial
+	result.Ready = tmdbReady && faceBankReady
 	if result.Ready {
-		result.Message = "IMDb、TMDB 和演员人脸向量库均已准备完成"
+		if len(missingNames) > 0 {
+			result.Message = fmt.Sprintf("影片元数据已准备；%d 位演员 reference 不足 %d 张，已跳过这些演员", len(missingNames), s.minReferences)
+		} else {
+			result.Message = "IMDb、TMDB 和演员人脸向量库均已准备完成"
+		}
 	} else if len(missingNames) > 0 {
 		result.Message = fmt.Sprintf("仍有 %d 位演员的人脸 reference 不足 %d 张", len(missingNames), s.minReferences)
 	}

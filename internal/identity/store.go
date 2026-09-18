@@ -79,12 +79,26 @@ type PersonCatalog interface {
 	FaceVectorCount(string) int
 }
 
+// MinimumReferencePersonCatalog is the readiness-aware actor-picker seam.
+// It is optional so older/custom stores can continue to expose the legacy
+// "at least one vector" lookup while production stores apply the configured
+// face-bank minimum.
+type MinimumReferencePersonCatalog interface {
+	SearchReadyPersonsWithMinimum(string, int, int) []model.Person
+}
+
 // ProcessedMoviePersonSearcher narrows the actor picker to IMDb cast members
 // of movies that already have extracted frames in the main media index. It is
 // optional so older/custom stores can continue to serve the broader ready
 // person query.
 type ProcessedMoviePersonSearcher interface {
 	SearchReadyPersonsForMovies(string, int, []string) []model.Person
+}
+
+// MinimumReferenceProcessedMoviePersonSearcher applies the same configured
+// face-bank minimum while restricting the actor picker to processed movies.
+type MinimumReferenceProcessedMoviePersonSearcher interface {
+	SearchReadyPersonsForMoviesWithMinimum(string, int, []string, int) []model.Person
 }
 
 // MovieCatalog is the indexed movie lookup seam used by import and ingest
@@ -104,6 +118,13 @@ type MovieSearcher interface {
 // scan used by the administrative movie picker.
 type MovieTitleSearcher interface {
 	SearchMoviesByTitle(string, int) []model.Movie
+}
+
+// MovieExactTitleSearcher is the bounded lookup path used while resolving a
+// release filename. Production SQLite implementations can answer exact IMDb
+// alias queries through the alias index without scanning the full catalog.
+type MovieExactTitleSearcher interface {
+	SearchMoviesByExactTitle(string, int) []model.Movie
 }
 
 type fileState struct {
@@ -364,6 +385,50 @@ func (s *FileStore) SearchMoviesByTitle(query string, limit int) []model.Movie {
 	return s.SearchMovies(query, limit)
 }
 
+func (s *FileStore) SearchMoviesByExactTitle(query string, limit int) []model.Movie {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	want := normalizeLoose(query)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.Movie, 0, limit)
+	for _, movie := range s.state.Movies {
+		matched := normalizeLoose(movie.Title) == want || normalizeLoose(movie.OriginalTitle) == want
+		if !matched {
+			for _, alias := range movie.AlternateTitles {
+				if normalizeLoose(alias) == want {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			result = append(result, cloneMovie(movie))
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		leftYear, rightYear := 0, 0
+		if result[left].Year != nil {
+			leftYear = *result[left].Year
+		}
+		if result[right].Year != nil {
+			rightYear = *result[right].Year
+		}
+		if leftYear != rightYear {
+			return leftYear > rightYear
+		}
+		return result[left].ID < result[right].ID
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
 func movieSearchRank(title, query string) int {
 	if title == query {
 		return 0
@@ -573,7 +638,11 @@ func (s *FileStore) SearchPersons(query string, limit int) []model.Person {
 // when at least one face vector is available; this prevents the UI from
 // offering filters that can never match a scene.
 func (s *FileStore) SearchReadyPersons(query string, limit int) []model.Person {
-	return s.searchReadyPersons(query, limit, nil, false)
+	return s.searchReadyPersons(query, limit, nil, false, 1)
+}
+
+func (s *FileStore) SearchReadyPersonsWithMinimum(query string, limit, minimumReferences int) []model.Person {
+	return s.searchReadyPersons(query, limit, nil, false, minimumReferences)
 }
 
 // SearchReadyPersonsForMovies returns only ready IMDb people that occur in
@@ -582,11 +651,21 @@ func (s *FileStore) SearchReadyPersonsForMovies(query string, limit int, movieID
 	if len(movieIDs) == 0 {
 		return []model.Person{}
 	}
-	return s.searchReadyPersons(query, limit, movieIDs, true)
+	return s.searchReadyPersons(query, limit, movieIDs, true, 1)
 }
 
-func (s *FileStore) searchReadyPersons(query string, limit int, movieIDs []string, restrictMovies bool) []model.Person {
+func (s *FileStore) SearchReadyPersonsForMoviesWithMinimum(query string, limit int, movieIDs []string, minimumReferences int) []model.Person {
+	if len(movieIDs) == 0 {
+		return []model.Person{}
+	}
+	return s.searchReadyPersons(query, limit, movieIDs, true, minimumReferences)
+}
+
+func (s *FileStore) searchReadyPersons(query string, limit int, movieIDs []string, restrictMovies bool, minimumReferences int) []model.Person {
 	query = normalize(query)
+	if minimumReferences < 1 {
+		minimumReferences = 1
+	}
 	if limit <= 0 {
 		limit = 20
 	}
@@ -633,7 +712,7 @@ func (s *FileStore) searchReadyPersons(query string, limit int, movieIDs []strin
 		if strings.TrimSpace(person.IMDbID) == "" {
 			continue
 		}
-		if counts[person.ID] == 0 {
+		if counts[person.ID] < minimumReferences {
 			continue
 		}
 		if restrictMovies {

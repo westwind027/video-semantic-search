@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"video-semantic-search/internal/metadata"
 	"video-semantic-search/internal/model"
@@ -535,6 +536,99 @@ func (s *SQLiteStore) SearchMoviesByTitle(query string, limit int) []model.Movie
 	return result
 }
 
+// SearchMoviesByExactTitle uses the indexed alias table for resolver lookups.
+// It deliberately avoids the broad LIKE query used by the administrative
+// movie picker: a full IMDb import has millions of aliases, so a release name
+// must not scan them just to resolve one title token.
+func (s *SQLiteStore) SearchMoviesByExactTitle(query string, limit int) []model.Movie {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	want := normalize(query)
+	variants := exactTitleVariants(query)
+	if want == "" || len(variants) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(variants)), ",")
+	args := []any{want, want}
+	for _, variant := range variants {
+		args = append(args, variant)
+	}
+	args = append(args, limit)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Resolve candidate IDs through the two indexed tables first. Combining
+	// the full movie row with the alias EXISTS predicate makes SQLite scan the
+	// entire movies table on the production catalog.
+	idRows, err := s.db.Query(`SELECT id FROM movies WHERE normalized_title = ? OR normalized_original_title = ?
+		UNION SELECT movie_id FROM movie_aliases WHERE title IN (`+placeholders+`) LIMIT ?`, args...)
+	if err != nil {
+		return nil
+	}
+	defer idRows.Close()
+	ids := make([]string, 0, limit)
+	for idRows.Next() {
+		var id string
+		if scanErr := idRows.Scan(&id); scanErr == nil {
+			ids = append(ids, id)
+		}
+	}
+	result := make([]model.Movie, 0, limit)
+	for _, id := range ids {
+		movie, scanErr := queryMovie(s.db.QueryRow(movieSelect+` WHERE id = ?`, id))
+		if scanErr != nil {
+			continue
+		}
+		s.attachMovieAliases(&movie)
+		result = append(result, movie)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		leftYear, rightYear := 0, 0
+		if result[left].Year != nil {
+			leftYear = *result[left].Year
+		}
+		if result[right].Year != nil {
+			rightYear = *result[right].Year
+		}
+		if leftYear != rightYear {
+			return leftYear > rightYear
+		}
+		return result[left].ID < result[right].ID
+	})
+	return result
+}
+
+func exactTitleVariants(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	variants := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		variants = append(variants, candidate)
+	}
+	add(value)
+	add(strings.ToLower(value))
+	runes := []rune(strings.ToLower(value))
+	if len(runes) > 0 {
+		runes[0] = unicode.ToUpper(runes[0])
+		add(string(runes))
+	}
+	return variants
+}
+
 func (s *SQLiteStore) ListMovies() []model.Movie {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -703,11 +797,15 @@ func (s *SQLiteStore) ListPersons() []model.Person {
 }
 
 func (s *SQLiteStore) SearchPersons(query string, limit int) []model.Person {
-	return s.searchPersons(query, limit, false, nil, false)
+	return s.searchPersons(query, limit, false, nil, false, 1)
 }
 
 func (s *SQLiteStore) SearchReadyPersons(query string, limit int) []model.Person {
-	return s.searchPersons(query, limit, true, nil, false)
+	return s.searchPersons(query, limit, true, nil, false, 1)
+}
+
+func (s *SQLiteStore) SearchReadyPersonsWithMinimum(query string, limit, minimumReferences int) []model.Person {
+	return s.searchPersons(query, limit, true, nil, false, minimumReferences)
 }
 
 // SearchReadyPersonsForMovies returns only ready IMDb people that occur in
@@ -716,15 +814,25 @@ func (s *SQLiteStore) SearchReadyPersonsForMovies(query string, limit int, movie
 	if len(movieIDs) == 0 {
 		return []model.Person{}
 	}
-	return s.searchPersons(query, limit, true, movieIDs, true)
+	return s.searchPersons(query, limit, true, movieIDs, true, 1)
 }
 
-func (s *SQLiteStore) searchPersons(query string, limit int, readyOnly bool, movieIDs []string, restrictMovies bool) []model.Person {
+func (s *SQLiteStore) SearchReadyPersonsForMoviesWithMinimum(query string, limit int, movieIDs []string, minimumReferences int) []model.Person {
+	if len(movieIDs) == 0 {
+		return []model.Person{}
+	}
+	return s.searchPersons(query, limit, true, movieIDs, true, minimumReferences)
+}
+
+func (s *SQLiteStore) searchPersons(query string, limit int, readyOnly bool, movieIDs []string, restrictMovies bool, minimumReferences int) []model.Person {
 	if limit <= 0 {
 		limit = 20
 	}
 	if limit > 100 {
 		limit = 100
+	}
+	if minimumReferences < 1 {
+		minimumReferences = 1
 	}
 	want := normalize(query)
 	s.mu.RLock()
@@ -735,7 +843,8 @@ func (s *SQLiteStore) searchPersons(query string, limit int, readyOnly bool, mov
 	args := []any{want, pattern, pattern, pattern}
 	if readyOnly {
 		where = ` WHERE trim(persons.imdb_id) <> '' AND` + strings.TrimPrefix(where, " WHERE")
-		where += ` AND EXISTS (SELECT 1 FROM face_vectors v WHERE v.person_id = persons.id)`
+		where += ` AND EXISTS (SELECT 1 FROM face_vectors v WHERE v.person_id = persons.id GROUP BY v.person_id HAVING COUNT(*) >= ?)`
+		args = append(args, minimumReferences)
 	}
 	if restrictMovies {
 		placeholders := make([]string, 0, len(movieIDs))

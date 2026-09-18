@@ -37,7 +37,7 @@ func ResolveMovieForMedia(catalog Store, media model.Media) (model.Movie, bool) 
 		if strings.ContainsAny(hint.title, "._[]()") || len(strings.Fields(hint.title)) > 12 {
 			continue
 		}
-		if movie, ok := catalog.FindMovie(hint.title, hint.year); ok {
+		if movie, ok := catalog.FindMovie(hint.title, hint.year); ok && movieCanonicalTitleMatches(movie, hint.title) {
 			return movie, true
 		}
 	}
@@ -47,6 +47,7 @@ func ResolveMovieForMedia(catalog Store, media model.Media) (model.Movie, bool) 
 		return model.Movie{}, false
 	}
 	titleSearcher, hasFastTitleSearch := catalog.(MovieTitleSearcher)
+	exactTitleSearcher, hasExactTitleSearch := catalog.(MovieExactTitleSearcher)
 	queries := movieSearchQueries(hints)
 	expectedYear := media.Year
 	if expectedYear == nil {
@@ -57,25 +58,45 @@ func ResolveMovieForMedia(catalog Store, media model.Media) (model.Movie, bool) 
 			}
 		}
 	}
-	var best model.Movie
-	bestScore := -1
-	for _, query := range queries {
-		candidates := []model.Movie(nil)
-		if hasFastTitleSearch {
-			candidates = titleSearcher.SearchMoviesByTitle(query, 100)
-		} else {
-			candidates = searcher.SearchMovies(query, 100)
-		}
-		for _, movie := range candidates {
-			if expectedYear != nil && (movie.Year == nil || *expectedYear != *movie.Year) {
-				continue
+	rankCandidates := func(searchMode int) (model.Movie, int) {
+		var best model.Movie
+		bestScore := -1
+		for _, query := range queries {
+			candidates := []model.Movie(nil)
+			switch {
+			case searchMode == 0 && hasFastTitleSearch:
+				candidates = titleSearcher.SearchMoviesByTitle(query, 100)
+			case searchMode == 1 && hasExactTitleSearch:
+				candidates = exactTitleSearcher.SearchMoviesByExactTitle(query, 100)
+			default:
+				candidates = searcher.SearchMovies(query, 100)
 			}
-			score := movieHintScore(movie, hints, query, expectedYear)
-			if score > bestScore || (score == bestScore && movie.ID < best.ID) {
-				best = movie
-				bestScore = score
+			for _, movie := range candidates {
+				if expectedYear != nil && (movie.Year == nil || *expectedYear != *movie.Year) {
+					continue
+				}
+				score := movieHintScore(movie, hints, query, expectedYear)
+				if score > bestScore || (score == bestScore && movie.ID < best.ID) {
+					best = movie
+					bestScore = score
+				}
 			}
 		}
+		return best, bestScore
+	}
+	best, bestScore := rankCandidates(0)
+	// The SQLite title-only path intentionally skips the large alias table.
+	// If it only found a partial release-title match, or an alias with the
+	// wrong year, retry through the full search so IMDb alternate titles can
+	// resolve names such as "Amelie" -> canonical "Amélie".
+	if bestScore >= 0 && (expectedYear != nil || movieCanonicalTitleMatchesAny(best, hints)) {
+		return best, true
+	}
+	best, bestScore = rankCandidates(1)
+	if bestScore < 0 && hasExactTitleSearch {
+		// Exact lookup is the normal path. Retain a broad fallback for unusual
+		// release names whose title token is not an exact IMDb alias.
+		best, bestScore = rankCandidates(2)
 	}
 	return best, bestScore >= 0
 }
@@ -120,7 +141,7 @@ func movieSearchQueries(hints []movieHint) []string {
 	seen := make(map[string]struct{})
 	queries := make([]string, 0, len(hints)*3)
 	add := func(value string) {
-		value = normalize(value)
+		value = normalizeLoose(value)
 		if value == "" {
 			return
 		}
@@ -133,7 +154,7 @@ func movieSearchQueries(hints []movieHint) []string {
 	tokens := make([]token, 0)
 	for _, hint := range hints {
 		for _, value := range strings.Fields(hint.title) {
-			value = normalize(value)
+			value = normalizeLoose(value)
 			if len([]rune(value)) < 4 || !usefulMovieToken(value) {
 				continue
 			}
@@ -170,12 +191,13 @@ func usefulMovieToken(value string) bool {
 }
 
 func movieHintScore(movie model.Movie, hints []movieHint, query string, expectedYear *int) int {
+	query = normalizeLoose(query)
 	score := 0
 	if expectedYear != nil && movie.Year != nil && *expectedYear == *movie.Year {
 		score += 1000
 	}
 	for _, value := range []string{movie.Title, movie.OriginalTitle} {
-		value = normalize(value)
+		value = normalizeLoose(value)
 		if value == "" {
 			continue
 		}
@@ -190,7 +212,7 @@ func movieHintScore(movie model.Movie, hints []movieHint, query string, expected
 		}
 	}
 	for _, hint := range hints {
-		for _, token := range strings.Fields(normalize(hint.title)) {
+		for _, token := range strings.Fields(normalizeLoose(hint.title)) {
 			if !usefulMovieToken(token) {
 				continue
 			}
@@ -207,6 +229,37 @@ func movieHintScore(movie model.Movie, hints []movieHint, query string, expected
 		}
 	}
 	return score
+}
+
+func movieCanonicalTitleMatches(movie model.Movie, title string) bool {
+	want := normalizeLoose(title)
+	return want != "" && (normalizeLoose(movie.Title) == want || normalizeLoose(movie.OriginalTitle) == want)
+}
+
+func movieCanonicalTitleMatchesAny(movie model.Movie, hints []movieHint) bool {
+	for _, hint := range hints {
+		if movieCanonicalTitleMatches(movie, hint.title) {
+			return true
+		}
+	}
+	return false
+}
+
+var movieDiacriticReplacer = strings.NewReplacer(
+	"À", "A", "Á", "A", "Â", "A", "Ã", "A", "Ä", "A", "Å", "A",
+	"à", "a", "á", "a", "â", "a", "ã", "a", "ä", "a", "å", "a",
+	"Æ", "AE", "æ", "ae", "Ç", "C", "ç", "c", "Ð", "D", "ð", "d",
+	"È", "E", "É", "E", "Ê", "E", "Ë", "E", "è", "e", "é", "e", "ê", "e", "ë", "e",
+	"Ì", "I", "Í", "I", "Î", "I", "Ï", "I", "ì", "i", "í", "i", "î", "i", "ï", "i",
+	"Ñ", "N", "ñ", "n", "Ò", "O", "Ó", "O", "Ô", "O", "Õ", "O", "Ö", "O",
+	"ò", "o", "ó", "o", "ô", "o", "õ", "o", "ö", "o", "Ø", "O", "ø", "o",
+	"Œ", "OE", "œ", "oe", "Ù", "U", "Ú", "U", "Û", "U", "Ü", "U",
+	"ù", "u", "ú", "u", "û", "u", "ü", "u", "Ý", "Y", "Ÿ", "Y", "ý", "y", "ÿ", "y",
+	"Š", "S", "š", "s", "Ž", "Z", "ž", "z", "Ł", "L", "ł", "l", "ß", "ss",
+)
+
+func normalizeLoose(value string) string {
+	return normalize(movieDiacriticReplacer.Replace(value))
 }
 
 func metadataString(values map[string]any, key string) string {
