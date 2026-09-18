@@ -15,7 +15,25 @@ data/identity-faces/
 data/imdb/
 # 抽帧与抓取生成的图片产物，可由 ingest / 爬虫重新生成
 data/frames/
+data/
 logs/
 video-search-server
 data/stream-cache/
 .build/
+
+# 发布分支只保留源码与构建所需的依赖清单；文档、样例数据和运行产物不入库
+*.md
+docs/
+tmp/
+
+# 本地编译产物
+bin/
+*.a
+*.bin
+*.dylib
+*.dll
+*.exe
+*.out
+*.so
+*.test
+search-server
