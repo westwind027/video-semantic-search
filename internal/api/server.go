@@ -36,6 +36,7 @@ type Server struct {
 	alipan                   *alipan.Manager
 	streams                  *streamProxy
 	cache                    *streamCache
+	playerControl            *playerControlHub
 	identityStore            identity.Store
 	identityTagger           identity.Tagger
 	identityClient           identity.Client
@@ -62,7 +63,7 @@ func NewServerWithAcquisitionAndAliyun(engine *search.Engine, indexStore store.I
 	if frameRoot == "" {
 		frameRoot = "data/frames"
 	}
-	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv()}
+	return &Server{engine: engine, store: indexStore, embedder: embedder, jobs: jobs, frameRoot: frameRoot, alipan: connector, streams: newStreamProxy(connector), cache: newStreamCache(streamCacheConfig()), playerControl: newPlayerControlHub(), transcodeURLs: map[string]transcodeEntry{}, tmdb: metadata.NewTMDBClientFromEnv()}
 }
 
 // ConfigurePublicURL sets the externally reachable origin used in generated
@@ -109,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/connectors/alipan/login/", s.handleAlipanLoginResource)
 	mux.HandleFunc("/v1/connectors/alipan/logout", s.handleAlipanLogout)
 	mux.HandleFunc("/v1/search", s.handleSearch)
+	mux.HandleFunc("/v1/player/control", s.handlePlayerControl)
+	mux.HandleFunc("/v1/player/events", s.handlePlayerEvents)
 	mux.HandleFunc("/static/frames/", s.handleStaticFrame)
 	return mux
 }

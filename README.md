@@ -243,6 +243,8 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `GET /v1/media`：查看累计索引的媒体。
 - `GET /v1/media/{media_id}`：查看媒体和场景。
 - `GET /v1/media/{media_id}/stream`：播放原始视频。本地文件直接流出；云盘文件由服务端按 Range 代理，签名 URL 过期自动刷新，并带 4 MiB 磁盘块缓存与并行预取（聚合单连接限速），页面可从任意搜索结果画面起播到该画面抽帧的真实时间。缓存目录 `data/stream-cache/`（LRU，默认 2 GiB，`VIDEO_STREAM_CACHE_DIR=off` 禁用；上游并发 `VIDEO_STREAM_CONCURRENCY`，默认 8）。
+- `POST /v1/player/control`：向已打开的搜索页面发送播放命令；打开 body 为 `{"action":"open","media_id":"...","time":123.45,"fullscreen":true,"autoplay":true}`，`action` 省略时保持打开行为，`time` 也可写成 `at` 或 `position`。关闭 body 为 `{"action":"close"}`，不需要 `media_id`。响应中的 `delivered` 表示当前是否有页面立即接收，短时间内未连接的页面也可在建立事件连接后收到最近一条命令。
+- `GET /v1/player/events`：播放器控制 SSE 通道，由页面内部自动连接，外部调用方通常只需要调用上面的 POST 接口。自动全屏受浏览器 transient user activation 安全策略限制；若浏览器拒绝，页面会显示“进入全屏并开启声音”按钮，点击一次即可完成。
 - `GET /v1/media/{media_id}/frames/{filename}`：查看 Go 抽取的代表帧。
 - `GET /static/frames/{media_id}/{filename}`：查看 Go 抽取的代表帧的稳定静态 URL；旧帧路由继续兼容。追加 `?size=small` 返回最大 320×240，追加 `?size=tiny` 返回最大 160×120；也可用 `?width=320&height=240` 或 `?w=160&h=120` 自定义等比缩放，`quality=1..100` 调整 JPEG 质量。
 - `DELETE /v1/media/{media_id}/scenes/{scene_id}`：删除一个关键帧及其对应向量。
@@ -258,6 +260,19 @@ MVP 将每个 Storyboard/Preview frame 当作一个 pseudo scene；后续再替�
 - `POST /v1/acquisitions/clear`：按状态批量移除终态任务记录；页面的“清理终态”会清理 `completed`、`failed` 与 `canceled`。
 - `POST /v1/files/validate`：批量检查服务端本地文件是否可读。
 - `POST /v1/files/inspect`：检查服务端本地路径，并返回文件/目录类型及可用性。
+
+外部控制页面播放示例：
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8000/v1/player/control \
+  -H 'content-type: application/json' \
+  -d '{"action":"open","media_id":"<media-id>","time":123.45,"fullscreen":true,"autoplay":true}'
+
+# 关闭已打开的播放器弹窗并退出全屏
+curl -fsS -X POST http://127.0.0.1:8000/v1/player/control \
+  -H 'content-type: application/json' \
+  -d '{"action":"close"}'
+```
 - `POST /v1/files/scan`：扫描服务端本地目录中的视频文件。
 - `GET /v1/connectors/alipan/status`：查看阿里云盘登录状态（只返回公开账户信息）。
 - `POST /v1/connectors/alipan/login/start`：创建扫码授权会话（默认 tickstep；可切换 official）。

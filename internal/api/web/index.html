@@ -314,6 +314,9 @@
        the viewport height; object-fit: contain guards any UA that fills. */
     #player-video { display: block; width: auto; height: auto; min-width: min(480px, 100%); max-width: 100%; max-height: 60vh; margin: 12px auto 0; border-radius: 12px; background: #000; object-fit: contain; }
     #player-error { margin: 10px 0 0; padding: 9px 12px; border: 1px solid #f1ccd4; border-radius: 10px; color: var(--bad); background: #fdf3f4; font-size: 12px; line-height: 1.5; }
+    .player-remote-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 0; padding: 10px 12px; border: 1px solid #d9ddff; border-radius: 10px; color: #5363ca; background: #f7f8ff; font-size: 12px; line-height: 1.45; }
+    .player-remote-action button { flex: none; min-height: 32px; padding: 6px 10px; border: 1px solid #cbd2ff; border-radius: 8px; color: #5363ca; background: #fff; font-size: 11px; cursor: pointer; }
+    .player-remote-action button:hover { background: #eef0ff; }
     .player-controls { display: flex; align-items: center; gap: 9px; margin-top: 12px; }
     .player-button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 9px; color: #43506a; background: var(--surface-muted); cursor: pointer; }
     .player-button:hover { border-color: #cbd2ff; color: var(--accent); background: var(--accent-soft); }
@@ -460,6 +463,7 @@
       </div>
       <video id="player-video" playsinline preload="metadata"></video>
       <div id="player-error" hidden></div>
+      <div id="player-remote-action" class="player-remote-action" hidden><span id="player-remote-message"></span><button id="player-remote-fullscreen" type="button">进入全屏并开启声音</button></div>
       <div class="player-controls">
         <button id="player-play" class="player-button" type="button" aria-label="播放或暂停"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg></button>
         <span id="player-current" class="player-time">0:00</span>
@@ -481,7 +485,7 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
   <script>
     const stages = { queued: '排队中', hashing_content: '计算文件指纹', preparing_metadata: '准备元数据', parsing: '解析', detecting_scenes: '分镜', extracting_frames: '提取画面', embedding: '生成嵌入', completed: '已完成', failed: '失败', canceled: '已停止' };
-    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', personSelections: [], personSearchController: null, personSearchTimer: null, movieSelection: null, movieDetails: new Map(), movieDetailToken: 0, sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, taskEventSource: null, taskEventReconnectTimer: null, taskEventRenderTimer: null, alipanFlow: { tickstep: null, web: null, skippedWeb: false }, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
+    const state = { mode: localStorage.getItem('framefind-mode') || 'media', files: [], media: [], tasks: [], selectedTasks: new Set(), selectedMedia: null, rebuildSelected: new Set(), rebuildProfile: 'original', personSelections: [], personSearchController: null, personSearchTimer: null, movieSelection: null, movieDetails: new Map(), movieDetailToken: 0, sourceKind: '', sourceDirectoryPath: '', sourceDirectoryName: '', taskExpanded: true, refreshToken: 0, taskEventSource: null, taskEventReconnectTimer: null, taskEventRenderTimer: null, playerEventSource: null, playerEventReconnectTimer: null, alipanFlow: { tickstep: null, web: null, skippedWeb: false }, alipanDrive: '', alipanParent: 'root', alipanPath: [], alipanFiles: [], alipanMarker: '', alipanLoadedDrive: '', alipanLoadedParent: '', alipanSelected: new Map(), alipanLoading: false, alipanFolderScan: null };
     const $ = (selector) => document.querySelector(selector);
     const formatSeconds = (value) => { const seconds = Number(value || 0); if (seconds < 60) return `${seconds.toFixed(1)}s`; const minutes = Math.floor(seconds / 60), rest = Math.floor(seconds % 60); return `${minutes}m ${String(rest).padStart(2, '0')}s`; };
     const formatBytes = (value) => { const bytes = Number(value || 0); if (!bytes) return ''; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`; return `${(bytes / 1024 / 1024).toFixed(1)} MB`; };
@@ -934,16 +938,66 @@
     // 从搜索结果画面打开播放器，直接跳到该画面抽帧的真实时间。
     let activeHls = null;
     let playerAspectOverride = null; // 源文件真实宽高比（来自索引元数据），用于覆盖错误的 SAR/DAR
+    let playerLoadToken = 0;
     function destroyHls() { if (activeHls) { try { activeHls.destroy(); } catch (_) {} activeHls = null; } }
 
-    function openPlayer(item, scene) {
-      const mediaID = item.media_id; if (!mediaID) return;
+    function setPlayerRemoteAction(message, visible) {
+      const box = $('#player-remote-action');
+      if (!box) return;
+      box.hidden = !visible;
+      if (visible) $('#player-remote-message').textContent = message || '';
+    }
+    async function requestPlayerFullscreen(shouldAutoplay = true, token = playerLoadToken) {
       const video = $('#player-video');
+      if (token !== playerLoadToken) return false;
+      if (document.fullscreenElement) {
+        video.muted = false;
+        if (shouldAutoplay) video.play().catch(() => {});
+        setPlayerRemoteAction('', false);
+        return true;
+      }
+      if (typeof video.requestFullscreen !== 'function') {
+        setPlayerRemoteAction('当前浏览器不支持自动全屏，请使用播放器下方的全屏按钮。', true);
+        return false;
+      }
+      try {
+        await video.requestFullscreen();
+        if (token !== playerLoadToken) return false;
+        video.muted = false;
+        if (shouldAutoplay) video.play().catch(() => {});
+        setPlayerRemoteAction('', false);
+        return true;
+      } catch (_) {
+        // requestFullscreen requires a transient user activation in modern
+        // browsers; an SSE callback cannot provide that activation.
+        setPlayerRemoteAction('浏览器限制了自动全屏，请点击此按钮并开启声音。', true);
+        return false;
+      }
+    }
+
+    function openPlayer(item, scene, options = {}) {
+      const mediaID = item.media_id; if (!mediaID) return;
+      scene = scene || {};
+      const video = $('#player-video');
+      const token = ++playerLoadToken;
+      const external = options.external === true;
+      const shouldAutoplay = !external || options.autoplay !== false;
       $('#player-title').textContent = item.title || '视频播放';
       // preview_time 是预览帧本身的时间戳（旧数据回退到场景起始时间）。
-      const startAt = Number(scene.preview_time) || Number(scene.start) || 0;
-      $('#player-subtitle').textContent = `起播 ${formatClock(startAt)} – ${formatClock(scene.end)} · 来自匹配画面`;
+      const requestedTime = Number(options.time);
+      const previewTime = Number(scene.preview_time);
+      const sceneStart = Number(scene.start);
+      const startAt = Number.isFinite(requestedTime) && requestedTime >= 0 ? requestedTime : Number.isFinite(previewTime) && previewTime >= 0 ? previewTime : Number.isFinite(sceneStart) && sceneStart >= 0 ? sceneStart : 0;
+      $('#player-subtitle').textContent = `起播 ${formatClock(startAt)} – ${formatClock(scene.end)} · ${external ? '外部控制' : '来自匹配画面'}`;
       $('#player-error').hidden = true;
+      setPlayerRemoteAction(external && options.fullscreen !== false ? '正在尝试自动全屏播放…' : '', external && options.fullscreen !== false);
+      destroyHls();
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      // Muted autoplay is generally allowed. A user click on the fallback
+      // action restores sound after the browser grants user activation.
+      video.muted = external && shouldAutoplay;
       // 部分片源的 SAR/DAR 元数据是错的（如 Tenet 的 2.2:1 画面被标成 DAR
       // 16:9），Chromium 会照着它把画面拉变形，且 videoWidth/videoHeight
       // 也被 SAR 修正过、不能信。这里用索引里源文件的真实分辨率作为宽高
@@ -952,32 +1006,38 @@
       playerAspectOverride = Number(item.width) > 0 && Number(item.height) > 0 ? Number(item.width) / Number(item.height) : null;
       if (playerAspectOverride) video.style.aspectRatio = String(playerAspectOverride); else video.style.aspectRatio = '';
       video.style.objectFit = '';
-      openDialog($('#player-dialog'));
+      const dialog = $('#player-dialog');
+      if (!dialog.open) openDialog(dialog);
       // 云盘视频优先走云端转码 HLS：CDN 直连不限速、H.264 浏览器原生解码、
       // HLS 支持进度条任意跳转。转码不可用时回退到原文件 Range 流。
-      const seekOnReady = () => { try { if (Math.abs(video.currentTime - startAt) > 0.05) video.currentTime = startAt; } catch (_) {} };
+      const seekOnReady = () => { if (token !== playerLoadToken) return; try { if (Math.abs(video.currentTime - startAt) > 0.05) video.currentTime = startAt; } catch (_) {} };
       const fallbackToOriginal = () => {
+        if (token !== playerLoadToken || !dialog.open) return;
         destroyHls();
         video.src = `/v1/media/${escapePath(mediaID)}/stream`;
         video.addEventListener('loadedmetadata', seekOnReady, { once: true });
         video.addEventListener('error', () => { const box = $('#player-error'); box.hidden = false; box.textContent = '浏览器无法播放这个视频：常见原因是 HEVC/H.265 编码或 MKV 容器不受浏览器支持，可将视频转码为 H.264 MP4 后重新处理。'; }, { once: true });
-        video.play().catch(() => {});
+        if (shouldAutoplay) video.play().catch(() => {});
       };
-      attachTranscoded(mediaID, seekOnReady, fallbackToOriginal, 10);
+      void attachTranscoded(mediaID, seekOnReady, fallbackToOriginal, 10, token, shouldAutoplay);
+      if (external && options.fullscreen !== false) window.setTimeout(() => { if (token === playerLoadToken && dialog.open) void requestPlayerFullscreen(shouldAutoplay, token); }, 0);
     }
 
     // attachTranscoded 请求转码播放地址并挂到 <video>：返回 'hls' 表示已
     // 挂载；返回 null 表示调用方应回退到原文件流。转码尚未完成时自动轮询，
     // attempts 用尽后回退。
-    async function attachTranscoded(mediaID, seekOnReady, fallback, attempts) {
+    async function attachTranscoded(mediaID, seekOnReady, fallback, attempts, token, shouldAutoplay) {
       const video = $('#player-video');
+      const isCurrent = () => token === playerLoadToken && $('#player-dialog').open;
+      if (!isCurrent()) return;
       try {
         const res = await fetch(`/v1/media/${escapePath(mediaID)}/transcode`);
+        if (!isCurrent()) return;
         if (res.status === 202) {
           if (attempts > 0) {
             $('#player-subtitle').textContent = '云端转码中，稍候自动重试…';
             await new Promise(resolve => setTimeout(resolve, 3000));
-            if ($('#player-dialog').open) return attachTranscoded(mediaID, seekOnReady, fallback, attempts - 1);
+            if (isCurrent()) return attachTranscoded(mediaID, seekOnReady, fallback, attempts - 1, token, shouldAutoplay);
           }
           return fallback();
         }
@@ -990,11 +1050,11 @@
           activeHls = new Hls({ maxBufferLength: 30, maxBufferSize: 60 * 1000 * 1000 });
           activeHls.loadSource(info.url);
           activeHls.attachMedia(video);
-          activeHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+          activeHls.on(Hls.Events.MANIFEST_PARSED, () => { if (isCurrent() && shouldAutoplay) video.play().catch(() => {}); });
           activeHls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fallback(); });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = info.url;
-          video.play().catch(() => {});
+          if (shouldAutoplay) video.play().catch(() => {});
         } else {
           return fallback();
         }
@@ -1039,12 +1099,17 @@
       $('#player-volume').addEventListener('input', event => { video.volume = Number(event.target.value); video.muted = video.volume === 0; });
       $('#player-rate').addEventListener('change', event => { video.playbackRate = Number(event.target.value) || 1; });
       $('#player-fullscreen').addEventListener('click', () => { if (document.fullscreenElement) void document.exitFullscreen(); else video.requestFullscreen?.(); });
+      $('#player-remote-fullscreen').addEventListener('click', () => { video.muted = false; if (Number($('#player-volume').value) === 0) { $('#player-volume').value = '1'; video.volume = 1; } video.play().catch(() => {}); void requestPlayerFullscreen(true); });
       // 关闭弹层时彻底释放视频元素与 HLS 实例，停止正在进行的下载。
       $('#player-dialog').addEventListener('close', () => {
+        playerLoadToken += 1;
         destroyHls();
+        if (document.fullscreenElement === video) { const exit = document.exitFullscreen?.(); if (exit?.catch) exit.catch(() => {}); }
         video.pause(); video.removeAttribute('src'); video.load();
+        video.muted = false;
         video.style.aspectRatio = ''; video.style.objectFit = '';
         playerAspectOverride = null;
+        setPlayerRemoteAction('', false);
         $('#player-seek').value = '0'; $('#player-current').textContent = '0:00'; $('#player-duration').textContent = '0:00';
       });
       syncPlayState();
@@ -1130,6 +1195,22 @@
     function scheduleTaskRender() { if (state.taskEventRenderTimer) return; state.taskEventRenderTimer = setTimeout(() => { state.taskEventRenderTimer = null; renderTasks(state.tasks); }, 50); }
     function applyTaskEvent(event) { if (!event || typeof event !== 'object') return; if (event.type === 'snapshot') { renderTasks(Array.isArray(event.tasks) ? event.tasks : []); return; } if (event.type === 'removed') { if (!event.task_id) return; state.tasks = state.tasks.filter(task => task.id !== event.task_id); scheduleTaskRender(); return; } if (event.type !== 'updated' || !event.task?.id) return; state.tasks = state.tasks.filter(task => task.id !== event.task.id); state.tasks.push(event.task); state.tasks.sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || ''))); scheduleTaskRender(); }
     function connectTaskEvents() { if (state.taskEventSource || typeof EventSource === 'undefined') return; const source = new EventSource('/v1/acquisitions/events'); state.taskEventSource = source; source.onmessage = event => { try { applyTaskEvent(JSON.parse(event.data)); } catch (_) {} }; source.onerror = () => { if (state.taskEventSource !== source) return; source.close(); state.taskEventSource = null; if (state.taskEventReconnectTimer) return; state.taskEventReconnectTimer = setTimeout(() => { state.taskEventReconnectTimer = null; connectTaskEvents(); }, 3000); }; }
+    async function handlePlayerCommand(command) {
+      if (!command || typeof command !== 'object') return;
+      const action = String(command.action || 'open').trim().toLowerCase();
+      if (action === 'close') { closeDialog($('#player-dialog')); return; }
+      if (action !== 'open') return;
+      const mediaID = String(command.media_id || '').trim();
+      const time = Number(command.time);
+      if (!mediaID || !Number.isFinite(time) || time < 0) return;
+      let item = state.media.find(media => media.media_id === mediaID);
+      if (!item) {
+        try { item = await requestJSON(`/v1/media/${escapePath(mediaID)}`); } catch (_) { return; }
+      }
+      if (!item || item.media_id !== mediaID) return;
+      openPlayer(item, { start: time, end: time, preview_time: time }, { external: true, time, fullscreen: command.fullscreen !== false, autoplay: command.autoplay !== false });
+    }
+    function connectPlayerEvents() { if (state.playerEventSource || typeof EventSource === 'undefined') return; const source = new EventSource('/v1/player/events'); state.playerEventSource = source; source.onmessage = event => { try { void handlePlayerCommand(JSON.parse(event.data)); } catch (_) {} }; source.onerror = () => { if (state.playerEventSource !== source) return; source.close(); state.playerEventSource = null; if (state.playerEventReconnectTimer) return; state.playerEventReconnectTimer = setTimeout(() => { state.playerEventReconnectTimer = null; connectPlayerEvents(); }, 3000); }; }
     async function refresh() { const token = ++state.refreshToken; const tasksPromise = requestJSON('/v1/acquisitions').then(tasks => { if (token === state.refreshToken) renderTasks(tasks); return tasks; }).catch(() => null); const [healthResult, mediaResult] = await Promise.allSettled([requestJSON('/healthz'), requestJSON('/v1/media')]); await tasksPromise; if (token !== state.refreshToken) return; if (healthResult.status === 'fulfilled') { const health = healthResult.value; setHealth(`${health.scene_count || 0} 个画面已索引`, health.status === 'ok' && health.embedding_status === 'ok', health.status !== 'ok'); } else { setHealth('服务部分不可用', false, true); } if (mediaResult.status === 'fulfilled') { state.media = Array.isArray(mediaResult.value) ? mediaResult.value : []; if (state.movieSelection && !indexedMedia().some(media => media.media_id === state.movieSelection.media_id)) { state.movieSelection = null; $('#movie-filter').value = ''; renderMoviePicker(); closeMovieOptions(); } else if (!$('#movie-options').hidden) { renderMovieOptions(); } if ($('#manage-dialog').open) renderLibrary(); } }
 
     function addFile(path, name, note = '') { const cleanPath = String(path || '').trim(); const cleanName = String(name || cleanPath.split(/[\\/]/).pop() || '未命名文件'); const duplicate = state.files.find(file => (cleanPath && file.path === cleanPath) || (!cleanPath && file.name === cleanName)); if (duplicate) return; state.files.push({ path: cleanPath, name: cleanName, note, size: 0, available: false, status: 'pending' }); renderQueue(); }
@@ -1265,7 +1346,7 @@
     $('#file-queue').addEventListener('click', event => { if (!event.target.closest('[data-remove-file]') || state.files.length) return; state.sourceKind = ''; state.sourceDirectoryPath = ''; state.sourceDirectoryName = ''; updateSourceSummary('尚未添加文件或目录', false); renderDirectoryTools(); });
     $('#alipan-drive').addEventListener('change', event => { state.alipanDrive = event.target.value; state.alipanParent = 'root'; state.alipanPath = []; state.alipanFiles = []; state.alipanMarker = ''; state.alipanLoadedDrive = ''; state.alipanLoadedParent = ''; state.alipanSelected.clear(); $('#alipan-breadcrumb').textContent = '根目录'; void loadAlipanFiles(); }); $('#alipan-back').addEventListener('click', leaveAlipanFolder); $('#alipan-files-refresh').addEventListener('click', () => { state.alipanLoadedDrive = ''; state.alipanLoadedParent = ''; state.alipanMarker = ''; void loadAlipanFiles(); }); $('#alipan-select-all').addEventListener('click', () => { const videos = state.alipanFiles.filter(file => String(file.type || '').toLowerCase() !== 'folder' && isAlipanVideo(file)); const allSelected = videos.length > 0 && videos.every(file => state.alipanSelected.has(file.file_id)); for (const file of videos) { if (allSelected) state.alipanSelected.delete(file.file_id); else state.alipanSelected.set(file.file_id, file); } renderAlipanFiles(); }); $('#alipan-process-selected').addEventListener('click', () => createAlipanTasks([...state.alipanSelected.values()])); $('#alipan-process-folder').addEventListener('click', () => { if (state.alipanFolderScan) state.alipanFolderScan.abort(); else void processAlipanFolder(state.alipanParent, state.alipanPath.at(-1)?.name || '当前目录'); }); $('#alipan-file-list').addEventListener('click', event => { const folderButton = event.target.closest('[data-alipan-folder]'); if (folderButton) { const folder = state.alipanFiles.find(file => file.file_id === folderButton.dataset.alipanFolder); if (folder) enterAlipanFolder(folder); return; } const processFolderButton = event.target.closest('[data-alipan-process-folder]'); if (processFolderButton) { void processAlipanFolder(processFolderButton.dataset.alipanProcessFolder, processFolderButton.dataset.alipanFolderName || '目录'); return; } const more = event.target.closest('[data-alipan-load-more]'); if (more) { void loadAlipanFiles(true); } }); $('#alipan-file-list').addEventListener('change', event => { const checkbox = event.target.closest('[data-alipan-file-checkbox]'); if (!checkbox) return; const file = state.alipanFiles.find(item => item.file_id === checkbox.dataset.alipanFileCheckbox); if (!file) return; if (checkbox.checked) state.alipanSelected.set(file.file_id, file); else state.alipanSelected.delete(file.file_id); renderAlipanFiles(); });
     const savedMinScore = localStorage.getItem('framefind-min-score'); const savedLimit = localStorage.getItem('framefind-limit'); if (savedMinScore !== null) $('#min-score').value = savedMinScore; if (savedLimit !== null) $('#result-limit').value = savedLimit; $('#min-score-value').textContent = `> ${Number($('#min-score').value).toFixed(2)}`; $('#min-score').addEventListener('input', () => { $('#min-score-value').textContent = `> ${Number($('#min-score').value).toFixed(2)}`; localStorage.setItem('framefind-min-score', $('#min-score').value); }); $('#result-limit').addEventListener('change', () => localStorage.setItem('framefind-limit', $('#result-limit').value));
-    void refresh(); connectTaskEvents(); setInterval(() => { void refresh(); }, 10000);
+    void refresh(); connectTaskEvents(); connectPlayerEvents(); setInterval(() => { void refresh(); }, 10000);
     // These small UI overrides keep the local queue actionable: every row can
     // be excluded from submission without losing it, and can be removed alone.
     function renderQueue() {
