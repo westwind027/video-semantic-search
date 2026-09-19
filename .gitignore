@@ -24,6 +24,7 @@ data/stream-cache/
 # 发布分支只保留源码与构建所需的依赖清单；文档、样例数据和运行产物不入库
 *.md
 !/README.md
+!/README.en.md
 !/python/README.md
 docs/
 tmp/

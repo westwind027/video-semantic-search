@@ -1,5 +1,7 @@
 # Video Semantic Search
 
+[English](README.en.md) · 中文
+
 一个以 Go 为主、Python 负责模型推理的视频语义搜索引擎 MVP。
 
 它可以把视频解析为关键帧或代表画面，使用多模态 embedding 建立场景级索引，再通过自然语言搜索返回相关视频、时间段和可访问的预览图。项目也提供可选的人脸识别、IMDb/TMDB 元数据、阿里云盘远程视频和外部播放器控制能力。
