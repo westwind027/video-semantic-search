@@ -424,3 +424,12 @@ go vet ./...
 git status --short --ignored
 git diff --check
 ```
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+
+The Alibaba Cloud Drive integration uses
+[`github.com/tickstep/aliyunpan-api`](https://github.com/tickstep/aliyunpan-api)
+v0.2.9, which is also distributed under Apache License 2.0. See
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for the attribution.

@@ -1,0 +1,16 @@
+Third-party notices
+===================
+
+github.com/tickstep/aliyunpan-api v0.2.9
+----------------------------------------
+
+This project uses github.com/tickstep/aliyunpan-api v0.2.9 as a Go module
+dependency for Alibaba Cloud Drive integration. The dependency is maintained
+by tickstep and is distributed under the Apache License, Version 2.0.
+
+Source: https://github.com/tickstep/aliyunpan-api
+License: Apache License 2.0
+
+The Apache License 2.0 text is provided in the repository's LICENSE file.
+The dependency is linked through Go modules; its source is not copied into
+this repository.
