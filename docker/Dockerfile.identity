@@ -1,0 +1,39 @@
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    IDENTITY_HOST=0.0.0.0 \
+    IDENTITY_PORT=7003 \
+    IDENTITY_BACKEND=insightface \
+    FACE_MODEL=buffalo_l \
+    IDENTITY_DEVICE=cuda \
+    INSIGHTFACE_HOME=/root/.insightface
+
+WORKDIR /app
+
+COPY python/requirements-identity.txt /tmp/requirements-identity.txt
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-identity.txt \
+    && (python -m pip uninstall -y onnxruntime || true) \
+    && python -m pip install --no-cache-dir --force-reinstall --no-deps 'onnxruntime-gpu>=1.18.0'
+
+# Install InsightFace and its dependencies, then replace its CPU-only ONNX
+# Runtime dependency with the CUDA provider package. The final package still
+# exposes the normal `onnxruntime` Python module used by InsightFace.
+# (The install is kept in the layer above so the requirements file is cached.)
+
+COPY python/identity_service.py /app/python/identity_service.py
+
+VOLUME ["/root/.insightface"]
+EXPOSE 7003
+
+HEALTHCHECK --interval=15s --timeout=10s --start-period=5m --retries=20 \
+    CMD curl --fail --silent http://127.0.0.1:7003/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["python", "/app/python/identity_service.py"]

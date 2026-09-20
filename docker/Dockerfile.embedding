@@ -1,0 +1,38 @@
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/root/.cache/huggingface \
+    TRANSFORMERS_CACHE=/root/.cache/huggingface \
+    EMBEDDING_HOST=0.0.0.0 \
+    EMBEDDING_PORT=7001 \
+    EMBEDDING_BACKEND=wemm \
+    WEMM_MODEL=tencent/WeMM-Embedding-2B \
+    EMBEDDING_DIMENSION=2048 \
+    EMBEDDING_DEVICE=cuda \
+    EMBEDDING_BATCH_SIZE=8
+
+WORKDIR /app
+
+COPY python/requirements-model-extra.txt /tmp/requirements-model-extra.txt
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-model-extra.txt
+
+# The model itself is intentionally downloaded at runtime into the HF cache
+# volume, rather than being baked into this image.
+
+COPY python/embedding_service.py /app/python/embedding_service.py
+
+VOLUME ["/root/.cache/huggingface"]
+EXPOSE 7001
+
+HEALTHCHECK --interval=15s --timeout=10s --start-period=5m --retries=20 \
+    CMD curl --fail --silent http://127.0.0.1:7001/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["python", "/app/python/embedding_service.py"]

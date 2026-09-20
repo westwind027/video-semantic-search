@@ -1,0 +1,44 @@
+FROM golang:1.22-bookworm AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o /out/search-server ./cmd/search-server
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    VIDEO_SEARCH_ADDR=:8000 \
+    VIDEO_SEARCH_INDEX=/app/data/index.json \
+    VIDEO_SEARCH_FRAME_DIR=/app/data/frames \
+    VIDEO_SEARCH_TASK_FILE=/app/data/acquisition_tasks.json \
+    VIDEO_SEARCH_IDENTITY_DB=/app/data/identity.db \
+    VIDEO_SEARCH_IDENTITY_FILE=/app/data/identity.json \
+    VIDEO_SEARCH_ALIPAN_CONFIG=/app/data/alipan_profiles.json \
+    VIDEO_REMOTE_INDEX_CACHE_DIR=/app/data/stream-cache
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/data /app/logs /app/data/frames /app/data/stream-cache \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+
+WORKDIR /app
+COPY --from=build /out/search-server /app/search-server
+
+VOLUME ["/app/data", "/app/logs"]
+EXPOSE 8000
+USER app
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD curl --fail --silent http://127.0.0.1:8000/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/app/search-server"]

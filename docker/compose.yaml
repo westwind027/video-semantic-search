@@ -1,0 +1,103 @@
+name: video-semantic-search
+
+services:
+  embedding:
+    image: ${IMAGE_NAMESPACE:-westwind027}/video-semantic-search-embedding:${IMAGE_TAG:-clean-release-v1.0}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.embedding
+    environment:
+      EMBEDDING_HOST: 0.0.0.0
+      EMBEDDING_PORT: 7001
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-wemm}
+      WEMM_MODEL: ${WEMM_MODEL:-tencent/WeMM-Embedding-2B}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-2048}
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cuda}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-8}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGINGFACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  identity:
+    image: ${IMAGE_NAMESPACE:-westwind027}/video-semantic-search-identity:${IMAGE_TAG:-clean-release-v1.0}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.identity
+    environment:
+      IDENTITY_HOST: 0.0.0.0
+      IDENTITY_PORT: 7003
+      IDENTITY_BACKEND: ${IDENTITY_BACKEND:-insightface}
+      FACE_MODEL: ${FACE_MODEL:-buffalo_l}
+      IDENTITY_DEVICE: ${IDENTITY_DEVICE:-cuda}
+      IDENTITY_MAX_BATCH: ${IDENTITY_MAX_BATCH:-16}
+    volumes:
+      - insightface-cache:/root/.insightface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  search:
+    image: ${IMAGE_NAMESPACE:-westwind027}/video-semantic-search:${IMAGE_TAG:-clean-release-v1.0}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.search-server
+    depends_on:
+      embedding:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+    environment:
+      VIDEO_SEARCH_ADDR: :8000
+      VIDEO_SEARCH_PUBLIC_URL: ${VIDEO_SEARCH_PUBLIC_URL:-http://localhost:8000}
+      VIDEO_SEARCH_INDEX: /app/data/index.json
+      VIDEO_SEARCH_FRAME_DIR: /app/data/frames
+      VIDEO_SEARCH_TASK_FILE: /app/data/acquisition_tasks.json
+      VIDEO_SEARCH_IDENTITY_DB: /app/data/identity.db
+      VIDEO_SEARCH_IDENTITY_FILE: /app/data/identity.json
+      VIDEO_SEARCH_ALIPAN_CONFIG: /app/data/alipan_profiles.json
+      VIDEO_REMOTE_INDEX_CACHE_DIR: /app/data/stream-cache
+      EMBEDDING_ENDPOINT: http://embedding:7001
+      IDENTITY_ENDPOINT: http://identity:7003
+      IDENTITY_ENABLED: ${IDENTITY_ENABLED:-true}
+      IDENTITY_LAZY_LOAD: ${IDENTITY_LAZY_LOAD:-true}
+      IDENTITY_MIN_REFERENCES: ${IDENTITY_MIN_REFERENCES:-5}
+      IDENTITY_REFERENCE_MAX_PER_PERSON: ${IDENTITY_REFERENCE_MAX_PER_PERSON:-8}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
+      TMDB_PROXY_URL: ${TMDB_PROXY_URL:-}
+      ALIYUNPAN_LOGIN_MODE: ${ALIYUNPAN_LOGIN_MODE:-tickstep}
+      ALIYUNPAN_CLIENT_ID: ${ALIYUNPAN_CLIENT_ID:-}
+      ALIYUNPAN_CLIENT_SECRET: ${ALIYUNPAN_CLIENT_SECRET:-}
+      ALIYUNPAN_TICKSTEP_BROKER_URL: ${ALIYUNPAN_TICKSTEP_BROKER_URL:-https://api.tickstep.com}
+      ALIYUNPAN_TICKSTEP_IP: ${ALIYUNPAN_TICKSTEP_IP:-}
+      ALIYUNPAN_WEB_REFRESH_TOKEN: ${ALIYUNPAN_WEB_REFRESH_TOKEN:-}
+    ports:
+      - "${VIDEO_SEARCH_PORT:-8000}:8000"
+    volumes:
+      - search-data:/app/data
+      - search-logs:/app/logs
+      # Put local videos under ./media or replace this bind mount with a host
+      # directory. Paths submitted to the UI/API must be /media/... inside the
+      # container, not the host's original path.
+      - ${VIDEO_SEARCH_MEDIA_DIR:-../media}:/media:ro
+    restart: unless-stopped
+
+volumes:
+  search-data:
+  search-logs:
+  hf-cache:
+  insightface-cache:

@@ -61,6 +61,45 @@ be added behind an adapter later.
 For independent installation, API, and configuration details for the Python
 services, see [`python/README.md`](python/README.md).
 
+## Docker Compose quick start
+
+The repository provides three images: the Go search service, the WeMM
+embedding service, and the optional InsightFace Identity service. The Go image
+includes `ffmpeg`/`ffprobe`. The GPU images use CUDA 12.8, while model weights
+are downloaded on first startup into Docker cache volumes instead of being
+baked into the images.
+
+WeMM and InsightFace require an NVIDIA driver, NVIDIA Container Toolkit, and a
+GPU-enabled Docker installation. To validate the API loop without model
+downloads, set both backends to `hash` in `docker/.env.example`.
+
+```bash
+cp docker/.env.example docker/.env
+# Edit docker/.env and add HF_TOKEN, TMDB_API_KEY, or other optional settings.
+mkdir -p media
+docker compose --env-file docker/.env -f docker/compose.yaml pull
+docker compose --env-file docker/.env -f docker/compose.yaml up -d
+curl -fsS http://localhost:8000/healthz
+```
+
+Only the Go service is exposed on port `8000` by default; embedding and
+Identity communicate over the internal Compose network. The first startup
+downloads the WeMM and InsightFace weights. Later startups reuse the
+`hf-cache` and `insightface-cache` volumes. To process local videos, put them
+under `media/` and use container paths such as `/media/<filename>` in the UI or
+API. Set `VIDEO_SEARCH_MEDIA_DIR` to map `/media` to another host directory.
+
+The default is the Docker Hub `clean-release-v1.0` tag; change `IMAGE_TAG` when
+upgrading to another release. Developers who need to rebuild from source can
+run `docker compose ... up -d --build`.
+
+```bash
+docker compose --env-file docker/.env -f docker/compose.yaml logs -f
+docker compose --env-file docker/.env -f docker/compose.yaml down
+```
+
+Never copy a `docker/.env` containing tokens into an image or commit it to Git.
+
 ## Requirements
 
 - Go 1.22 or later

@@ -42,6 +42,42 @@ Go 与 Python 服务之间使用简单的 HTTP JSON 接口，可以独立部署�
 
 Python 推理服务的独立安装、API 和配置说明见 [`python/README.md`](python/README.md)。
 
+## Docker Compose 快速启动
+
+项目提供三套镜像：Go 搜索服务、WeMM embedding 服务和可选的
+InsightFace Identity 服务。Go 镜像内置 `ffmpeg`/`ffprobe`；GPU 镜像使用
+CUDA 12.8，模型权重首次启动时下载到 Docker 缓存卷，不会打进镜像。
+
+使用 WeMM 和 InsightFace 需要已安装 NVIDIA 驱动、NVIDIA Container Toolkit
+以及支持 GPU 的 Docker；仅验证 API 闭环时，可以把 `docker/.env.example`
+中的两个后端改为 `hash`，不需要下载模型。
+
+```bash
+cp docker/.env.example docker/.env
+# 编辑 docker/.env，按需填写 HF_TOKEN、TMDB_API_KEY 等运行时配置
+mkdir -p media
+docker compose --env-file docker/.env -f docker/compose.yaml pull
+docker compose --env-file docker/.env -f docker/compose.yaml up -d
+curl -fsS http://localhost:8000/healthz
+```
+
+默认只暴露 Go 服务的 `8000` 端口，embedding 和 Identity 通过 Compose
+内部网络访问。首次启动会下载 WeMM 和 InsightFace 权重，后续启动复用
+`hf-cache`、`insightface-cache` 卷。需要处理本地视频时，将视频放在
+`media/` 下，并在页面/API 中使用容器内路径 `/media/<filename>`；也可以用
+`VIDEO_SEARCH_MEDIA_DIR` 把 `/media` 映射到其他主机目录。
+
+默认使用 Docker Hub 的 `clean-release-v1.0` 镜像标签；升级到其他发布版本
+时修改 `IMAGE_TAG`。开发者需要从源码重新构建时，可执行
+`docker compose ... up -d --build`。
+
+```bash
+docker compose --env-file docker/.env -f docker/compose.yaml logs -f
+docker compose --env-file docker/.env -f docker/compose.yaml down
+```
+
+不要把包含 token 的 `docker/.env` 或其他凭据复制进镜像或提交到 Git。
+
 ## 环境要求
 
 - Go 1.22 或更高版本
